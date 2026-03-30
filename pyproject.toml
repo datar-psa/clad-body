@@ -1,0 +1,57 @@
+[project]
+name = "clad-body"
+dynamic = ["version"]
+description = "Anny/MHR body loaders and ISO 8559-1 body measurements"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+authors = [
+    {name = "Clad", email = "hi@clad.you"},
+]
+keywords = ["body", "measurement", "anthropometry", "iso-8559", "anny", "mhr"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.15.3",
+    "trimesh>=4.11.2",
+]
+
+[project.optional-dependencies]
+anny = [
+    "anny>=0.3.1",
+    "torch>=2.0",
+    "roma>=0.0.2",
+    "pillow>=9.0",
+]
+render = [
+    "matplotlib>=3.7",
+    "pyrender>=0.1.45",
+    "pyopengl>=3.1.0",
+]
+mhr = [
+    "mhr>=1.0.0",
+    "pymomentum-cpu>=0.1.108",
+]
+
+[project.urls]
+Homepage = "https://github.com/datar-psa/clad-body"
+Repository = "https://github.com/datar-psa/clad-body"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "VERSION"
+pattern = "(?P<version>.+)"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clad_body"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["findings/", "tests/results/", "dist/", "*.egg-info/"]

@@ -1,0 +1,88 @@
+version: '3'
+
+vars:
+  PACKAGE: clad-body
+
+tasks:
+  test:
+    desc: "Run measurement regression tests (add -- --view for 4-view renders)"
+    cmds:
+      - bash -c 'source ../body-tuning/venv/bin/activate && pytest tests/ -v {{.CLI_ARGS}}'
+
+  bump:
+    desc: "Bump version and create git tag. BUMP=patch|minor|major (default: patch)"
+    vars:
+      BUMP: '{{default "patch" .BUMP}}'
+    cmds:
+      - |
+        current=$(cat "{{.TASKFILE_DIR}}/VERSION" | tr -d '[:space:]')
+        IFS='.' read -r major minor patch <<< "$current"
+        case "{{.BUMP}}" in
+          major) major=$((major + 1)); minor=0; patch=0 ;;
+          minor) minor=$((minor + 1)); patch=0 ;;
+          patch) patch=$((patch + 1)) ;;
+          *) echo "Error: BUMP must be patch|minor|major" >&2; exit 1 ;;
+        esac
+        new="${major}.${minor}.${patch}"
+        tag="{{.PACKAGE}}/v${new}"
+
+        if git rev-parse "$tag" >/dev/null 2>&1; then
+          echo "Error: tag $tag already exists. Tags are immutable." >&2
+          exit 1
+        fi
+
+        echo "$new" > "{{.TASKFILE_DIR}}/VERSION"
+        git add "{{.TASKFILE_DIR}}/VERSION"
+        git commit -m "chore: bump {{.PACKAGE}} to $new"
+        git tag "$tag"
+        echo "Bumped {{.PACKAGE}}: $current → $new  (tag: $tag)"
+
+  _check-clean:
+    internal: true
+    desc: Fail if there are staged or unstaged changes
+    cmds:
+      - |
+        UNSTAGED=$(git diff --name-only -- "{{.TASKFILE_DIR}}")
+        STAGED=$(git diff --cached --name-only -- "{{.TASKFILE_DIR}}")
+        if [ -n "$UNSTAGED" ] || [ -n "$STAGED" ]; then
+          echo "Error: uncommitted changes — the git tag would not match what is shipped." >&2
+          [ -n "$STAGED"   ] && echo "  Staged:$( echo "$STAGED"   | sed 's/^/\n    /')" >&2
+          [ -n "$UNSTAGED" ] && echo "  Unstaged:$(echo "$UNSTAGED" | sed 's/^/\n    /')" >&2
+          echo "Commit or stash changes, then retry." >&2
+          exit 1
+        fi
+
+  _build:
+    internal: true
+    deps: [test]
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - rm -rf "{{.TASKFILE_DIR}}/dist"
+      - uv build --out-dir "{{.TASKFILE_DIR}}/dist"
+
+  _publish:
+    internal: true
+    desc: "Publish to registry. Set PUBLISH_URL and PUBLISH_TOKEN env vars, or defaults to GCP AR."
+    dir: "{{.TASKFILE_DIR}}"
+    cmds:
+      - |
+        URL="${PUBLISH_URL:-https://europe-west1-python.pkg.dev/clad-main/clad-python/}"
+        TOKEN="${PUBLISH_TOKEN:-$(gcloud auth print-access-token)}"
+        uv publish --publish-url "$URL" --username _token --password "$TOKEN" dist/*
+
+  ship:
+    desc: "check-clean → bump → build → publish. BUMP=patch|minor|major (default: patch)"
+    vars:
+      BUMP: '{{default "patch" .BUMP}}'
+    cmds:
+      - task: _check-clean
+      - task: bump
+        vars: {BUMP: "{{.BUMP}}"}
+      - task: _build
+      - task: _publish
+      - |
+        version=$(cat "{{.TASKFILE_DIR}}/VERSION" | tr -d '[:space:]')
+        tag="{{.PACKAGE}}/v${version}"
+        git push origin HEAD "$tag"
+        echo ""
+        echo "Shipped {{.PACKAGE}}==${version}"
