@@ -7,7 +7,7 @@ tasks:
   test:
     desc: "Run measurement regression tests (add -- --view for 4-view renders)"
     cmds:
-      - bash -c 'source ../body-tuning/venv/bin/activate && pytest tests/ -v {{.CLI_ARGS}}'
+      - bash -c 'source ${VENV:-venv}/bin/activate && pytest tests/ -v {{.CLI_ARGS}}'
 
   bump:
     desc: "Bump version and create git tag. BUMP=patch|minor|major (default: patch)"

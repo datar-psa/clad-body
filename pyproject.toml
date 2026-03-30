@@ -6,7 +6,8 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 authors = [
-    {name = "Clad", email = "hi@clad.you"},
+    {name = "Arkadiusz Kraus", email = "arkadius@datar.app"},
+    {name = "Arkadiusz Noster", email = "arek@datar.app"},
 ]
 keywords = ["body", "measurement", "anthropometry", "iso-8559", "anny", "mhr"]
 classifiers = [
