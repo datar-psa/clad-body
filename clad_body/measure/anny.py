@@ -42,6 +42,7 @@ from clad_body.measure.common import (
     measure_calf,
     measure_crotch_length,
     measure_knee,
+    measure_shirt_length,
     measure_sleeve_length,
     measure_inseam,
     measure_neck,
@@ -692,6 +693,13 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
             measurements["_shoulder_arc_pts"] = sw_arc
         measurements["sleeve_length_cm"] = measure_sleeve_length(
             joints, mesh=mesh_tri, acromion_fn=find_acromion)
+
+        # Shirt length: side neck → crotch along front body contour
+        shirt_cm, shirt_pts = measure_shirt_length(
+            joints, mesh_tri, measurements.get("_inseam_z", 0))
+        measurements["shirt_length_cm"] = shirt_cm
+        if shirt_pts is not None:
+            measurements["_shirt_length_pts"] = shirt_pts
 
     # Anny-specific body composition
     measurements["volume_m3"] = anthro.volume(verts).item()

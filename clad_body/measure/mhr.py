@@ -34,6 +34,7 @@ from clad_body.measure.common import (
     measure_calf,
     measure_crotch_length,
     measure_knee,
+    measure_shirt_length,
     measure_sleeve_length,
     measure_inseam,
     measure_shoulder_width,
@@ -249,6 +250,14 @@ def measure_mhr(mesh_or_body, render_path=None, title=""):
             measurements["_shoulder_arc_pts"] = sw_arc
         measurements["sleeve_length_cm"] = measure_sleeve_length(
             joints, mesh=mesh, acromion_fn=find_acromion)
+
+        # Shirt length: side neck → crotch along front body contour
+        shirt_cm, shirt_pts = measure_shirt_length(
+            joints, mesh, measurements.get("_inseam_z", 0))
+        measurements["shirt_length_cm"] = shirt_cm
+        if shirt_pts is not None:
+            measurements["_shirt_length_pts"] = shirt_pts
+
     if joints:
         measurements["_debug_joints"] = {k: np.array(v) for k, v in joints.items()}
     measurements["_linear_polylines"] = extract_linear_measurement_polylines(

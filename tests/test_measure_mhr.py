@@ -37,6 +37,7 @@ CIRC_KEYS = [
     "thigh_cm", "knee_cm", "calf_cm", "upperarm_cm", "wrist_cm",
     "inseam_cm", "shoulder_width_cm", "sleeve_length_cm",
     "crotch_length_cm", "front_rise_cm", "back_rise_cm",
+    "shirt_length_cm",
 ]
 
 
