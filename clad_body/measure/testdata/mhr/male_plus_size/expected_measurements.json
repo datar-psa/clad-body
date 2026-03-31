@@ -8,5 +8,8 @@
   "upperarm_cm": 35.46,
   "inseam_cm": 74.05,
   "shoulder_width_cm": 41.41,
-  "sleeve_length_cm": 52.17
+  "sleeve_length_cm": 52.17,
+  "knee_cm": 40.92,
+  "calf_cm": 40.65,
+  "wrist_cm": 17.45
 }

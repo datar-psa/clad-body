@@ -31,11 +31,14 @@ from clad_body.measure.common import (
     extract_linear_measurement_polylines,
     extract_measurement_contours,
     find_measurement,
+    measure_calf,
+    measure_knee,
     measure_sleeve_length,
     measure_inseam,
     measure_shoulder_width,
     measure_thigh,
     measure_upperarm,
+    measure_wrist,
     torso_circumference_at_z,
     load_target_measurements,
     print_comparison,
@@ -193,11 +196,29 @@ def measure_mhr(mesh_or_body, render_path=None, title=""):
     measurements["_thigh_z"] = thigh_z
     measurements["_thigh_pct"] = thigh_pct
 
+    # Knee: circumference at mid-patella level
+    knee_cm, knee_z, knee_pct = measure_knee(mesh, height)
+    measurements["knee_cm"] = knee_cm
+    measurements["_knee_z"] = knee_z
+    measurements["_knee_pct"] = knee_pct
+
+    # Calf: max circumference from 2 separate lower leg contours
+    calf_cm, calf_z, calf_pct = measure_calf(mesh, height)
+    measurements["calf_cm"] = calf_cm
+    measurements["_calf_z"] = calf_z
+    measurements["_calf_pct"] = calf_pct
+
     # Upper arm: max circumference from arm contours separate from torso
     upperarm_cm, upperarm_z, upperarm_pct = measure_upperarm(mesh, height)
     measurements["upperarm_cm"] = upperarm_cm
     measurements["_upperarm_z"] = upperarm_z
     measurements["_upperarm_pct"] = upperarm_pct
+
+    # Wrist: circumference perpendicular to forearm axis
+    wrist_cm, wrist_z, wrist_pct = measure_wrist(mesh, height, joints=joints)
+    measurements["wrist_cm"] = wrist_cm
+    measurements["_wrist_z"] = wrist_z
+    measurements["_wrist_pct"] = wrist_pct
 
     # Inseam via mesh geometry (crotch detection)
     inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh, height)

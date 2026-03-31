@@ -13,5 +13,8 @@
   "sleeve_length_cm": 51.36,
   "volume_m3": 0.07,
   "mass_kg": 65.67,
-  "bmi": 24.54
+  "bmi": 24.54,
+  "knee_cm": 36.69,
+  "calf_cm": 36.34,
+  "wrist_cm": 15.94
 }

@@ -37,7 +37,8 @@ TOLERANCE_BMI = 0.2
 
 CIRC_KEYS = [
     "height_cm", "bust_cm", "underbust_cm", "waist_cm", "stomach_cm",
-    "hips_cm", "shoulder_width_cm", "thigh_cm", "upperarm_cm", "neck_cm",
+    "hips_cm", "shoulder_width_cm", "thigh_cm", "knee_cm", "calf_cm",
+    "upperarm_cm", "wrist_cm", "neck_cm",
     "inseam_cm", "sleeve_length_cm",
 ]
 

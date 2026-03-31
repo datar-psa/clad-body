@@ -39,6 +39,8 @@ from clad_body.measure.common import (
     extract_joints_from_names,
     extract_linear_measurement_polylines,
     extract_measurement_contours,
+    measure_calf,
+    measure_knee,
     measure_sleeve_length,
     measure_inseam,
     measure_neck,
@@ -46,6 +48,7 @@ from clad_body.measure.common import (
     measure_stomach,
     measure_thigh,
     measure_upperarm,
+    measure_wrist,
     torso_circumference_at_z,
     torso_sweep_bust_hips,
     load_target_measurements,
@@ -602,6 +605,16 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
         measurements["_thigh_z"] = thigh_z
         measurements["_thigh_pct"] = thigh_pct
 
+        knee_cm, knee_z, knee_pct = measure_knee(mesh_tri, height)
+        measurements["knee_cm"] = knee_cm
+        measurements["_knee_z"] = knee_z
+        measurements["_knee_pct"] = knee_pct
+
+        calf_cm, calf_z, calf_pct = measure_calf(mesh_tri, height)
+        measurements["calf_cm"] = calf_cm
+        measurements["_calf_z"] = calf_z
+        measurements["_calf_pct"] = calf_pct
+
         upperarm_cm, upperarm_z, upperarm_pct = measure_upperarm(mesh_tri, height)
         measurements["upperarm_cm"] = upperarm_cm
         measurements["_upperarm_z"] = upperarm_z
@@ -621,6 +634,13 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
     measurements["_neck_pct"] = neck_pct
     if neck_pts is not None:
         measurements["_neck_contour_pts"] = neck_pts
+
+    # Wrist circumference (perpendicular to forearm axis — skip in fast mode)
+    if not fast:
+        wrist_cm, wrist_z, wrist_pct = measure_wrist(mesh_tri, height, joints=joints)
+        measurements["wrist_cm"] = wrist_cm
+        measurements["_wrist_z"] = wrist_z
+        measurements["_wrist_pct"] = wrist_pct
 
     # Underbust (ISO 8559-1 §5.7.8 — inframammary fold):
     # Bottom of the breast region from skinning weights (weight > 0.3) marks

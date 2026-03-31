@@ -13,7 +13,7 @@ Neither Anny nor MHR ship with a measurement library. You get a mesh with 14–1
 ## What it does
 
 - **Load** Anny bodies from phenotype params, MHR bodies from SAM 3D Body params
-- **Measure** circumferences (bust, waist, hips, thigh, upper arm, neck) via ISO 8559-1 plane sweep with convex hull tape-measure simulation
+- **Measure** circumferences (bust, waist, hips, thigh, knee, calf, upper arm, wrist, neck) via ISO 8559-1 plane sweep with convex hull tape-measure simulation
 - **Linear measurements** — shoulder width, sleeve length, inseam
 - **Body composition** — volume, mass, BMI, body fat estimation
 - **Render** 4-view PNGs with measurement contour overlays
@@ -91,7 +91,10 @@ All circumference measurements follow [ISO 8559-1:2017](https://www.iso.org/stan
 | Stomach | — | Maximum circumference between waist and hips | <img src="assets/contours/stomach.png" width="80"> |
 | Hips | §5.3.13 | Maximum horizontal circumference in hip region (46–54% height) | <img src="assets/contours/hip.png" width="80"> |
 | Thigh | §5.3.20 | Maximum circumference from separate leg contours | <img src="assets/contours/thigh.png" width="80"> |
+| Knee | §5.3.22 | Circumference at mid-patella level | <img src="assets/contours/knee.png" width="80"> |
+| Calf | §5.3.24 | Maximum circumference of the lower leg | <img src="assets/contours/calf.png" width="80"> |
 | Upper arm | §5.3.16 | Maximum circumference from separate arm contours | <img src="assets/contours/upperarm.png" width="80"> |
+| Wrist | §5.3.19 | Circumference over the wrist bones (perpendicular to forearm) | <img src="assets/contours/wrist.png" width="80"> |
 | Neck | §5.3.2 | Minimum circumference in neck region | <img src="assets/contours/neck.png" width="80"> |
 | Shoulder width | §5.4.2 | Acromion-to-acromion arc over C7 vertebra | <img src="assets/contours/shoulder_width.png" width="80"> |
 | Sleeve length | §5.7.8 | Acromion to wrist via elbow | <img src="assets/contours/sleeve_length.png" width="80"> |

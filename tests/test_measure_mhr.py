@@ -34,8 +34,8 @@ TOLERANCE_CM = 0.1
 
 CIRC_KEYS = [
     "height_cm", "bust_cm", "hip_cm", "waist_cm", "stomach_cm",
-    "thigh_cm", "upperarm_cm", "inseam_cm", "shoulder_width_cm",
-    "sleeve_length_cm",
+    "thigh_cm", "knee_cm", "calf_cm", "upperarm_cm", "wrist_cm",
+    "inseam_cm", "shoulder_width_cm", "sleeve_length_cm",
 ]
 
 

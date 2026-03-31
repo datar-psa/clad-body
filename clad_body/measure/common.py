@@ -33,7 +33,8 @@ MAX_TORSO_X_EXTENT = 0.50
 CONTOUR_COLORS = {
     "bust": "green", "underbust": "cyan", "waist": "blue",
     "stomach": "darkorange", "hip": "red",
-    "thigh": "purple", "upperarm": "orange", "neck": "teal",
+    "thigh": "purple", "knee": "deeppink", "calf": "hotpink",
+    "upperarm": "orange", "wrist": "gold", "neck": "teal",
 }
 
 # Canonical joint name mapping for linear measurements.
@@ -863,6 +864,146 @@ def measure_inseam(mesh, height, step=0.002):
     return 0, 0, 0
 
 
+def measure_knee(mesh, height, step=0.002):
+    """Measure knee circumference at mid-patella level (ISO 8559-1 §5.3.22).
+
+    Sweeps from 24-31% height looking for Z levels where there are exactly
+    2 separate leg contours of similar size. Returns the circumference at
+    the height closest to typical mid-patella level (~28% height).
+
+    Returns:
+        (circ_cm, z, pct) or (0, 0, 0) if not found.
+    """
+    slicer = MeshSlicer(mesh)
+    target_pct = 0.275
+    best_circ = 0
+    best_z = 0
+    best_dist = float("inf")
+
+    for pct in np.arange(0.24, 0.31, step / height):
+        z = height * pct
+        contours = slicer.limb_contours_at_z(z)
+        if len(contours) < 2:
+            continue
+
+        c1, xc1, _ = contours[0]
+        c2, xc2, _ = contours[1]
+
+        if xc1 * xc2 >= 0:  # same side
+            continue
+        if min(c1, c2) < 0.5 * max(c1, c2):  # too different
+            continue
+
+        dist = abs(pct - target_pct)
+        if dist < best_dist:
+            best_dist = dist
+            best_circ = (c1 + c2) / 2
+            best_z = z
+
+    if best_circ == 0:
+        return 0, 0, 0
+    return best_circ * 100, best_z, best_z / height * 100
+
+
+def measure_calf(mesh, height, step=0.002):
+    """Measure calf circumference — maximum lower leg girth (ISO 8559-1 §5.3.24).
+
+    Sweeps from 16-26% height looking for Z levels where there are exactly
+    2 separate leg contours of similar size. Returns the maximum average
+    circumference (fullest part of the calf muscle).
+
+    Returns:
+        (circ_cm, z, pct) or (0, 0, 0) if not found.
+    """
+    slicer = MeshSlicer(mesh)
+    best_circ = 0
+    best_z = 0
+
+    for pct in np.arange(0.16, 0.26, step / height):
+        z = height * pct
+        contours = slicer.limb_contours_at_z(z)
+        if len(contours) < 2:
+            continue
+
+        c1, xc1, _ = contours[0]
+        c2, xc2, _ = contours[1]
+
+        if xc1 * xc2 >= 0:  # same side
+            continue
+        if min(c1, c2) < 0.5 * max(c1, c2):  # too different
+            continue
+
+        avg_circ = (c1 + c2) / 2
+        if avg_circ > best_circ:
+            best_circ = avg_circ
+            best_z = z
+
+    if best_circ == 0:
+        return 0, 0, 0
+    return best_circ * 100, best_z, best_z / height * 100
+
+
+def measure_wrist(mesh, height, joints=None, step=0.002):
+    """Measure wrist circumference perpendicular to the forearm axis.
+
+    ISO 8559-1 §5.3.19: girth of the wrist measured over the wrist bones
+    (styloid processes of radius and ulna).
+
+    When joints are provided, uses elbow→wrist to estimate the forearm axis
+    and slices perpendicular to it at the wrist position. Sweeps a small
+    range along the axis to find the minimum circumference (the bony wrist).
+
+    Without joints, returns (0, 0, 0) — horizontal slicing is unreliable
+    for arms in A-pose (~45° angle).
+
+    Returns:
+        (circ_cm, z, pct) or (0, 0, 0) if not found.
+    """
+    if not joints:
+        return 0, 0, 0
+
+    circs = []
+    for side in ("l", "r"):
+        elbow = joints.get(f"{side}_elbow")
+        wrist = joints.get(f"{side}_wrist")
+        if elbow is None or wrist is None:
+            continue
+
+        axis = wrist - elbow
+        axis_len = np.linalg.norm(axis)
+        if axis_len < 0.01:
+            continue
+        axis_unit = axis / axis_len
+
+        # Sweep a small range near the wrist (last 15% of forearm)
+        best_circ = float("inf")
+        for t in np.arange(0.85, 1.01, step / axis_len):
+            point = elbow + t * axis
+            pts = _perpendicular_limb_contour(mesh, point, axis_unit, max_dist=0.10)
+            if pts is None or len(pts) < 3:
+                continue
+            closed = np.vstack([pts, pts[:1]])
+            circ = np.linalg.norm(np.diff(closed, axis=0), axis=1).sum()
+            if circ < 0.10:  # reject tiny fragments (real wrist > 12cm)
+                continue
+            if circ < best_circ:
+                best_circ = circ
+
+        if best_circ < float("inf"):
+            circs.append(best_circ)
+
+    if not circs:
+        return 0, 0, 0
+
+    avg_circ = float(np.mean(circs))
+    # Approximate wrist Z from joint position (for metadata)
+    wrist_pos = joints.get("l_wrist")
+    if wrist_pos is None:
+        wrist_pos = joints.get("r_wrist")
+    wrist_z = float(wrist_pos[2]) if wrist_pos is not None else 0
+    return avg_circ * 100, wrist_z, wrist_z / height * 100
+
+
 def _shoulder_arc_polyline(verts, l_acromion, r_acromion, c7, n_samples=30):
     """Build a smooth surface-following polyline from R acromion → C7 → L acromion.
 
@@ -1190,7 +1331,10 @@ def print_comparison(current: dict, target: dict):
         "hips_cm":            ("Hips",       "cm", ".1f"),
         "hip_cm":             ("Hip",        "cm", ".1f"),
         "thigh_cm":           ("Thigh",      "cm", ".1f"),
+        "knee_cm":            ("Knee",       "cm", ".1f"),
+        "calf_cm":            ("Calf",       "cm", ".1f"),
         "upperarm_cm":        ("Upper arm",  "cm", ".1f"),
+        "wrist_cm":           ("Wrist",      "cm", ".1f"),
         "neck_cm":            ("Neck",       "cm", ".1f"),
         "shoulder_width_cm":  ("Shoulder W", "cm", ".1f"),
         "sleeve_length_cm":   ("Sleeve len", "cm", ".1f"),
@@ -1558,12 +1702,34 @@ def extract_measurement_contours(mesh, measurements, torso_mesh=None):
         if thigh_pts:
             contours["thigh"] = thigh_pts
 
+    # Knee contours (two legs) — same extraction as thigh at knee height
+    knee_z = measurements.get("_knee_z", 0)
+    if knee_z > 0:
+        knee_pts = _extract_thigh_contours_3d(mesh, knee_z)
+        if knee_pts:
+            contours["knee"] = knee_pts
+
+    # Calf contours (two legs) — same extraction as thigh at calf height
+    calf_z = measurements.get("_calf_z", 0)
+    if calf_z > 0:
+        calf_pts = _extract_thigh_contours_3d(mesh, calf_z)
+        if calf_pts:
+            contours["calf"] = calf_pts
+
     # Upperarm contours (two arms) via perpendicular plane slicing
     arm_z = measurements.get("_upperarm_z", 0)
     if arm_z > 0:
         arm_pts = _extract_limb_contours_3d(mesh, arm_z)
         if arm_pts:
             contours["upperarm"] = arm_pts
+
+    # Wrist contours (two arms) — smaller limbs, tighter filter
+    wrist_z = measurements.get("_wrist_z", 0)
+    if wrist_z > 0:
+        wrist_pts = _extract_limb_contours_3d(
+            mesh, wrist_z, max_x_extent=0.12, min_x_offset=0.10)
+        if wrist_pts:
+            contours["wrist"] = wrist_pts
 
     # Neck contour — reuse perpendicular contour from measurement if available,
     # otherwise fall back to horizontal slice at _neck_z.
@@ -1676,7 +1842,9 @@ def render_4view(mesh, measurements, output_path, title="", model_label="",
     for name, keys in [("Bust", ["bust_cm"]), ("Waist", ["waist_cm"]),
                         ("Stomach", ["stomach_cm"]),
                         ("Hips", ["hips_cm", "hip_cm"]),
-                        ("Thigh", ["thigh_cm"]), ("Arm", ["upperarm_cm"]),
+                        ("Thigh", ["thigh_cm"]), ("Knee", ["knee_cm"]),
+                        ("Calf", ["calf_cm"]),
+                        ("Arm", ["upperarm_cm"]), ("Wrist", ["wrist_cm"]),
                         ("Neck", ["neck_cm"]),
                         ("Shoulder W", ["shoulder_width_cm"]),
                         ("Sleeve", ["sleeve_length_cm"])]:
