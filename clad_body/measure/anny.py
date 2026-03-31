@@ -40,6 +40,7 @@ from clad_body.measure.common import (
     extract_linear_measurement_polylines,
     extract_measurement_contours,
     measure_calf,
+    measure_crotch_length,
     measure_knee,
     measure_sleeve_length,
     measure_inseam,
@@ -626,6 +627,19 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
         measurements["_inseam_z"] = inseam_z
         measurements["_inseam_pct"] = inseam_pct
 
+        # Crotch length (total rise) via surface tracing
+        crotch_len, front_rise, back_rise, crotch_f_pts, crotch_b_pts = \
+            measure_crotch_length(
+                mesh_tri, height,
+                measurements.get("_waist_z", 0), inseam_z)
+        measurements["crotch_length_cm"] = crotch_len
+        measurements["front_rise_cm"] = front_rise
+        measurements["back_rise_cm"] = back_rise
+        if crotch_f_pts is not None:
+            measurements["_crotch_front_pts"] = crotch_f_pts
+        if crotch_b_pts is not None:
+            measurements["_crotch_back_pts"] = crotch_b_pts
+
     # Neck circumference (single plane sweep — always computed, needed for BF% estimation)
     neck_cm, neck_z, neck_pct, neck_pts = measure_neck(
         mesh_tri, height, joints=joints)
@@ -825,6 +839,8 @@ def main():
             print(f"Sleeve len:    {measurements['sleeve_length_cm']:>6.1f} cm")
         if measurements.get("inseam_cm", 0) > 0:
             print(f"Inseam:        {measurements['inseam_cm']:>6.1f} cm  (crotch at {measurements['_inseam_pct']:.0f}% height)")
+        if measurements.get("crotch_length_cm", 0) > 0:
+            print(f"Crotch len:    {measurements['crotch_length_cm']:>6.1f} cm  (front {measurements['front_rise_cm']:.1f} + back {measurements['back_rise_cm']:.1f})")
         print(f"Mass:          {measurements['mass_kg']:>6.1f} kg")
         print(f"BMI:           {measurements['bmi']:>6.2f}")
         print(f"Volume:        {measurements['volume_m3']:>6.4f} m³")

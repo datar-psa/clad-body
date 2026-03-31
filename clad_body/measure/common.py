@@ -864,6 +864,98 @@ def measure_inseam(mesh, height, step=0.002):
     return 0, 0, 0
 
 
+def measure_crotch_length(mesh, height, waist_z, crotch_z, step=0.005):
+    """Measure crotch length (total rise) via surface tracing — ISO 8559-1 §5.1.11.
+
+    Traces the body surface along the midline (X~0) from waist (front) down
+    through the perineum (crotch) and back up to waist (back).  This is the
+    measurement a tailor takes by running a tape from front waist, between
+    the legs, to back waist.
+
+    Blue Eye Custom Tailor: "From waist down through crotch to buttocks and
+    back up."  SAIA 3DLook provides front_crotch_length and back_crotch_length
+    as separate values.
+
+    Args:
+        mesh: trimesh body mesh (Z-up, metres, floor-aligned)
+        height: body height in metres
+        waist_z: waist Z height in metres (from waist measurement)
+        crotch_z: crotch Z height in metres (from measure_inseam)
+        step: Z sampling interval in metres (default 5mm)
+
+    Returns:
+        (crotch_length_cm, front_rise_cm, back_rise_cm,
+         front_pts, back_pts) where pts are (N, 3) arrays for rendering.
+        Returns (0, 0, 0, None, None) if inputs are invalid.
+    """
+    if waist_z <= 0 or crotch_z <= 0 or waist_z <= crotch_z:
+        return 0, 0, 0, None, None
+
+    x_band = 0.05  # metres — midline band half-width
+    slicer = MeshSlicer(mesh)
+
+    # Sample Z levels from waist down to crotch
+    z_levels = np.arange(waist_z, crotch_z - step / 2, -step)
+    if len(z_levels) < 2:
+        return 0, 0, 0, None, None
+
+    # At each Z, use MeshSlicer to get actual surface contour points (not
+    # raw vertices, which include interior mesh points at leg junctions).
+    # From the contour XY points near X~0, take min-Y (front) and max-Y (back).
+    front_ys = []
+    back_ys = []
+    valid_zs = []
+
+    for z in z_levels:
+        contours = slicer.contours_at_z(z)
+        if not contours:
+            continue
+
+        # Collect all contour points near the midline
+        midline_pts = []
+        for pts_xy, _, _ in contours:
+            near = pts_xy[np.abs(pts_xy[:, 0]) < x_band]
+            if len(near) > 0:
+                midline_pts.append(near)
+
+        if not midline_pts:
+            continue
+        midline = np.vstack(midline_pts)
+        if len(midline) < 2:
+            continue
+
+        front_ys.append(float(midline[:, 1].min()))
+        back_ys.append(float(midline[:, 1].max()))
+        valid_zs.append(z)
+
+    if len(valid_zs) < 2:
+        return 0, 0, 0, None, None
+
+    valid_zs = np.array(valid_zs)
+    front_ys = np.array(front_ys)
+    back_ys = np.array(back_ys)
+
+    # Build 3D polylines (X=0, Y=surface, Z=height)
+    front_pts = np.column_stack([
+        np.zeros(len(valid_zs)), front_ys, valid_zs])
+    back_pts = np.column_stack([
+        np.zeros(len(valid_zs)), back_ys, valid_zs])
+
+    # Both paths share the crotch endpoint (perineum) — average the
+    # front and back at the lowest point so paths connect cleanly.
+    crotch_pt = (front_pts[-1] + back_pts[-1]) / 2
+    front_pts[-1] = crotch_pt
+    back_pts[-1] = crotch_pt
+
+    # Sum Euclidean segment lengths
+    front_len = float(np.linalg.norm(np.diff(front_pts, axis=0), axis=1).sum())
+    back_len = float(np.linalg.norm(np.diff(back_pts, axis=0), axis=1).sum())
+    total = front_len + back_len
+
+    return (total * 100, front_len * 100, back_len * 100,
+            front_pts.astype(np.float32), back_pts.astype(np.float32))
+
+
 def measure_knee(mesh, height, step=0.002):
     """Measure knee circumference at mid-patella level (ISO 8559-1 §5.3.22).
 
@@ -1250,6 +1342,14 @@ def extract_linear_measurement_polylines(mesh, measurements, joints):
         ], dtype=np.float32)
         result["inseam"] = pts
 
+    # Crotch length: front and back midline paths from waist to perineum.
+    crotch_front = measurements.get("_crotch_front_pts")
+    crotch_back = measurements.get("_crotch_back_pts")
+    if crotch_front is not None:
+        result["crotch_front"] = crotch_front
+    if crotch_back is not None:
+        result["crotch_back"] = crotch_back
+
     return result
 
 
@@ -1339,6 +1439,9 @@ def print_comparison(current: dict, target: dict):
         "shoulder_width_cm":  ("Shoulder W", "cm", ".1f"),
         "sleeve_length_cm":   ("Sleeve len", "cm", ".1f"),
         "inseam_cm":          ("Inseam",     "cm", ".1f"),
+        "crotch_length_cm":   ("Crotch len", "cm", ".1f"),
+        "front_rise_cm":      ("Front rise", "cm", ".1f"),
+        "back_rise_cm":       ("Back rise",  "cm", ".1f"),
         "mass_kg":            ("Mass",       "kg", ".1f"),
     }
 
@@ -1810,6 +1913,8 @@ def render_4view(mesh, measurements, output_path, title="", model_label="",
             "shoulder_width": ("cyan", {"Front", "Back", "Side (R)", "3/4 View"}),
             "sleeve_length": ("magenta", {"Back", "Side (R)"}),
             "inseam": ("yellow", {"Side (R)", "3/4 View"}),
+            "crotch_front": ("lime", {"Side (R)", "Front"}),
+            "crotch_back": ("lime", {"Side (R)", "Back"}),
         }
         for name, pts in measurements.get("_linear_polylines", {}).items():
             cfg = _linear_cfg.get(name)
@@ -1847,7 +1952,8 @@ def render_4view(mesh, measurements, output_path, title="", model_label="",
                         ("Arm", ["upperarm_cm"]), ("Wrist", ["wrist_cm"]),
                         ("Neck", ["neck_cm"]),
                         ("Shoulder W", ["shoulder_width_cm"]),
-                        ("Sleeve", ["sleeve_length_cm"])]:
+                        ("Sleeve", ["sleeve_length_cm"]),
+                        ("Crotch", ["crotch_length_cm"])]:
         val = 0
         for key in keys:
             val = measurements.get(key, 0)

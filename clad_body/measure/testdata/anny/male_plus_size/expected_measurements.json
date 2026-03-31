@@ -16,5 +16,8 @@
   "bmi": 29.44,
   "knee_cm": 37.64,
   "calf_cm": 39.5,
-  "wrist_cm": 17.15
+  "wrist_cm": 17.15,
+  "crotch_length_cm": 77.3,
+  "front_rise_cm": 38.5,
+  "back_rise_cm": 38.7
 }

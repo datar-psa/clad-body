@@ -11,5 +11,8 @@
   "sleeve_length_cm": 55.71,
   "knee_cm": 36.63,
   "calf_cm": 37.86,
-  "wrist_cm": 16.08
+  "wrist_cm": 16.08,
+  "crotch_length_cm": 76.2,
+  "front_rise_cm": 37.2,
+  "back_rise_cm": 39.0
 }

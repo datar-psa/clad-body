@@ -32,6 +32,7 @@ from clad_body.measure.common import (
     extract_measurement_contours,
     find_measurement,
     measure_calf,
+    measure_crotch_length,
     measure_knee,
     measure_sleeve_length,
     measure_inseam,
@@ -226,6 +227,19 @@ def measure_mhr(mesh_or_body, render_path=None, title=""):
     measurements["_inseam_z"] = inseam_z
     measurements["_inseam_pct"] = inseam_pct
 
+    # Crotch length (total rise) via surface tracing
+    crotch_len, front_rise, back_rise, crotch_f_pts, crotch_b_pts = \
+        measure_crotch_length(
+            mesh, height,
+            measurements.get("_waist_z", 0), inseam_z)
+    measurements["crotch_length_cm"] = crotch_len
+    measurements["front_rise_cm"] = front_rise
+    measurements["back_rise_cm"] = back_rise
+    if crotch_f_pts is not None:
+        measurements["_crotch_front_pts"] = crotch_f_pts
+    if crotch_b_pts is not None:
+        measurements["_crotch_back_pts"] = crotch_b_pts
+
     # Joint-based linear measurements (shoulder width, arm length)
     if joints:
         sw_cm, sw_arc = measure_shoulder_width(
@@ -348,6 +362,8 @@ def main():
         print(f"Sleeve len:{measurements['sleeve_length_cm']:>6.1f} cm")
     if measurements.get("inseam_cm", 0) > 0:
         print(f"Inseam:    {measurements['inseam_cm']:>6.1f} cm  (crotch at {measurements['_inseam_pct']:.0f}% height)")
+    if measurements.get("crotch_length_cm", 0) > 0:
+        print(f"Crotch len:{measurements['crotch_length_cm']:>6.1f} cm  (front {measurements['front_rise_cm']:.1f} + back {measurements['back_rise_cm']:.1f})")
 
     # Target comparison
     if args.target:
