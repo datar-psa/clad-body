@@ -4,6 +4,12 @@ Body loaders and ISO 8559-1 measurements for [Anny](https://github.com/naver/ann
 
 Neither Anny nor MHR ship with a measurement library. You get a mesh with 14–18K vertices and no standard way to extract waist circumference from it. This package fills that gap.
 
+<p align="center">
+  <img src="assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
+  <br>
+  <img src="assets/4view_male_average.png" alt="Anny body — male average, 4-view with ISO 8559-1 circumference measurements" width="700">
+</p>
+
 ## What it does
 
 - **Load** Anny bodies from phenotype params, MHR bodies from SAM 3D Body params
@@ -75,21 +81,21 @@ print(f"Circumference: {circumference * 100:.1f} cm")
 
 ## Measurements
 
-All circumference measurements follow [ISO 8559-1:2017](https://www.iso.org/standard/61686.html) conventions:
+All circumference measurements follow [ISO 8559-1:2017](https://www.iso.org/standard/61686.html) conventions. Circumferences use convex hull projection to simulate a tape measure wrapping around the body.
 
-| Measurement | Method |
-|---|---|
-| Bust | Maximum horizontal circumference in bust region (68–76% height) |
-| Waist | Circumference at ISO anatomical midpoint (~61% height) |
-| Hips | Maximum horizontal circumference in hip region (46–54% height) |
-| Thigh | Maximum circumference from separate leg contours |
-| Upper arm | Maximum circumference from separate arm contours |
-| Neck | Minimum circumference in neck region |
-| Shoulder width | Acromion-to-acromion arc over C7 vertebra |
-| Sleeve length | Acromion to wrist via elbow |
-| Inseam | Crotch point to floor |
-
-Circumferences use convex hull projection to simulate a tape measure wrapping around the body.
+| Measurement | ISO 8559-1 | Method | |
+|---|---|---|---|
+| Bust | §5.3.4 | Maximum horizontal circumference in bust region (68–76% height) | <img src="assets/contours/bust.png" width="80"> |
+| Underbust | §5.3.6 | Circumference directly below the bust prominence | <img src="assets/contours/underbust.png" width="80"> |
+| Waist | §5.3.10 | Circumference at anatomical midpoint (~61% height) | <img src="assets/contours/waist.png" width="80"> |
+| Stomach | — | Maximum circumference between waist and hips | <img src="assets/contours/stomach.png" width="80"> |
+| Hips | §5.3.13 | Maximum horizontal circumference in hip region (46–54% height) | <img src="assets/contours/hip.png" width="80"> |
+| Thigh | §5.3.20 | Maximum circumference from separate leg contours | <img src="assets/contours/thigh.png" width="80"> |
+| Upper arm | §5.3.16 | Maximum circumference from separate arm contours | <img src="assets/contours/upperarm.png" width="80"> |
+| Neck | §5.3.2 | Minimum circumference in neck region | <img src="assets/contours/neck.png" width="80"> |
+| Shoulder width | §5.4.2 | Acromion-to-acromion arc over C7 vertebra | <img src="assets/contours/shoulder_width.png" width="80"> |
+| Sleeve length | §5.7.8 | Acromion to wrist via elbow | <img src="assets/contours/sleeve_length.png" width="80"> |
+| Inseam | §5.1.15 | Crotch point to floor | <img src="assets/contours/inseam.png" width="80"> |
 
 ## Optional extras
 
@@ -100,6 +106,10 @@ Circumferences use convex hull projection to simulate a tape measure wrapping ar
 | `[render]` | `render_4view()` — matplotlib/pyrender 4-view body renders |
 
 Without extras, `MeshSlicer` and the core measurement utilities work with any trimesh mesh — only numpy, scipy, and trimesh are required.
+
+## Demo
+
+Try the full pipeline (body reconstruction + measurements) at [clad.you/size-aware/size-me](https://clad.you/size-aware/size-me).
 
 ## Background
 
