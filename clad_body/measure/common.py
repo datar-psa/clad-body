@@ -49,6 +49,7 @@ ANNY_JOINT_MAP = {
     "neck_base": ["neck01"],      # base of neck (C7 level, ~85% height)
     "neck_mid": ["neck02"],       # neck01 tail = neck02 head (~86% height, Adam's apple)
     "head": ["head"],             # top of neck / base of skull
+    "side_neck": ["shoulder01.L", "shoulder01.R"],  # shoulder01 head = clavicle tail (~82% height)
     "l_shoulder": ["upperarm01.L"],
     "r_shoulder": ["upperarm01.R"],
     "l_elbow": ["lowerarm01.L"],
@@ -1242,6 +1243,147 @@ def measure_sleeve_length(joints, mesh=None, acromion_fn=None):
 measure_arm_length = measure_sleeve_length
 
 
+def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
+    """Measure shirt length — shoulder to crotch along front body contour.
+
+    SAIA 3DLook "jacket length": distance from Side Neck to crotch level.
+    Blue Eye Custom Tailor #12: from shoulder seam at collar to bottom of fly.
+
+    Algorithm:
+      1. **Start point** — shoulder bone projected to nearest skin vertex.
+         Anny: ``side_neck`` (shoulder01.L head = acromioclavicular joint).
+         MHR: midpoint of C7 and ``l_shoulder``.
+         The hit vertex's X becomes ``trace_x`` for the whole sweep.
+      2. **Front surface sweep** — from 5 cm below start Z to 2 cm above
+         crotch Z (5 mm steps).  At each Z, take most-anterior Y within
+         ±4 cm of ``trace_x``.
+      3. **Convex hull ("not tight to skin")** — lower convex hull of the
+         (Z, Y) profile via Andrew's monotone chain.  Bridges concavities,
+         follows convex curvature back toward the body after peaks.
+      4. **Single path** — same polyline for measurement and visualisation.
+         Measurement = sum of Euclidean segment lengths.  Polyline offset
+         0.5 mm in front of skin for rendering.
+
+    Args:
+        joints: dict with 'c7' and optionally 'side_neck' / 'l_shoulder'.
+        mesh: trimesh of the full body (Z-up, metres).
+        crotch_z: Z coordinate of crotch (from measure_inseam), in metres.
+        measurements: dict from the measurement pipeline (for shoulder arc).
+        step: vertical step between sample planes (metres, default 5 mm).
+
+    Returns:
+        (shirt_length_cm, polyline) — cm value and (N, 3) float32 array,
+        or (0, None) on failure.
+    """
+    c7 = joints.get("c7")
+    if c7 is None or crotch_z <= 0:
+        return 0, None
+
+    verts = np.array(mesh.vertices)
+    if measurements is None:
+        measurements = {}
+
+    # ── Shoulder bone → nearest skin vertex = start point ──
+    # Anny: side_neck (acromioclavicular joint).
+    # MHR: midpoint of C7 and l_shoulder (collar-shoulder junction).
+    # Fallback: neck radius X at C7 - 3% height.
+    slicer = MeshSlicer(mesh)
+    side_neck_x = 0.055  # default neck radius
+    c7_contours = slicer.contours_at_z(float(c7[2]))
+    if c7_contours:
+        all_pts = np.vstack([pts for pts, _, _ in c7_contours])
+        neck_pts = all_pts[(all_pts[:, 0] > 0) & (all_pts[:, 0] < 0.08)]
+        if len(neck_pts) > 0:
+            side_neck_x = float(neck_pts[:, 0].max())
+
+    shoulder_bone = joints.get("side_neck")
+    if shoulder_bone is None:
+        l_sh = joints.get("l_shoulder")
+        if l_sh is not None:
+            shoulder_bone = (c7 + l_sh) / 2
+    if shoulder_bone is not None:
+        bone_x = float(shoulder_bone[0])
+        bone_y = float(shoulder_bone[1])
+        bone_z = float(shoulder_bone[2])
+    else:
+        bone_x = side_neck_x
+        bone_y = float(c7[1])
+        bone_z = float(c7[2]) - 0.03 * verts[:, 2].max()
+
+    # Project to nearest skin vertex
+    bone_pos = np.array([bone_x, bone_y, bone_z])
+    hit = verts[np.argmin(np.linalg.norm(verts - bone_pos, axis=1))]
+    snz = float(hit[2])
+    trace_x = float(hit[0])
+    start_y = float(hit[1])
+
+    if snz <= crotch_z:
+        return 0, None
+
+    # ── Front surface sweep (5 cm below shoulder → 2 cm above crotch) ──
+    # Start point is prepended; hull bridges from shoulder to first bust contact.
+    x_band = 0.04
+    sweep_top = snz - 0.05
+    sweep_bottom = crotch_z + 0.02
+    z_levels = np.arange(sweep_top, sweep_bottom - step / 2, -step)
+
+    front_ys = [start_y]
+    valid_zs = [snz]
+
+    for z in z_levels:
+        contours = slicer.contours_at_z(z)
+        if not contours:
+            continue
+        nearby_pts = []
+        for pts_xy, _, _ in contours:
+            near = pts_xy[np.abs(pts_xy[:, 0] - trace_x) < x_band]
+            if len(near) > 0:
+                nearby_pts.append(near)
+        if not nearby_pts:
+            continue
+        band = np.vstack(nearby_pts)
+        front_ys.append(float(band[:, 1].min()))
+        valid_zs.append(z)
+
+    if len(valid_zs) < 2:
+        return 0, None
+
+    # ── Lower convex hull — "not tight to skin" ──
+    # Tape touches convex protrusions (chest, belly) and bridges
+    # concavities (dip between them).  After a peak the tape follows the
+    # outgoing convex curvature back toward the body.
+    n = len(valid_zs)
+    z_arr = np.array(valid_zs)   # Z descending (top → bottom)
+    y_arr = np.array(front_ys)
+
+    # Andrew's monotone chain (lower hull), Z-ascending pass.
+    hull = []
+    for i in range(n - 1, -1, -1):
+        while len(hull) >= 2:
+            o, a = hull[-2], hull[-1]
+            cross = ((z_arr[a] - z_arr[o]) * (y_arr[i] - y_arr[o]) -
+                     (y_arr[a] - y_arr[o]) * (z_arr[i] - z_arr[o]))
+            if cross <= 0:
+                hull.pop()
+            else:
+                break
+        hull.append(i)
+    hull.reverse()
+
+    hull_z = z_arr[hull]
+    hull_y = y_arr[hull]
+    tape_ys = np.interp(z_arr, hull_z[::-1], hull_y[::-1])
+
+    # Offset 0.5 mm in front of skin so the line sits ON the surface
+    tape_ys = np.minimum(tape_ys, y_arr) - 0.005
+
+    # ── Single polyline for measurement + visualisation ──
+    pts = np.column_stack([np.full(n, trace_x), tape_ys, z_arr])
+    total_cm = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum() * 100)
+
+    return total_cm, pts.astype(np.float32)
+
+
 
 
 def _surface_y_at(verts, x, z, x_tol=0.05, z_tol=0.05, side="back"):
@@ -1350,6 +1492,11 @@ def extract_linear_measurement_polylines(mesh, measurements, joints):
     if crotch_back is not None:
         result["crotch_back"] = crotch_back
 
+    # Shirt length: surface-traced polyline from measure_shirt_length().
+    shirt_pts = measurements.get("_shirt_length_pts")
+    if shirt_pts is not None:
+        result["shirt_length"] = shirt_pts
+
     return result
 
 
@@ -1442,6 +1589,7 @@ def print_comparison(current: dict, target: dict):
         "crotch_length_cm":   ("Crotch len", "cm", ".1f"),
         "front_rise_cm":      ("Front rise", "cm", ".1f"),
         "back_rise_cm":       ("Back rise",  "cm", ".1f"),
+        "shirt_length_cm":    ("Shirt len",  "cm", ".1f"),
         "mass_kg":            ("Mass",       "kg", ".1f"),
     }
 
@@ -1915,6 +2063,7 @@ def render_4view(mesh, measurements, output_path, title="", model_label="",
             "inseam": ("yellow", {"Side (R)", "3/4 View"}),
             "crotch_front": ("lime", {"Side (R)", "Front"}),
             "crotch_back": ("lime", {"Side (R)", "Back"}),
+            "shirt_length": ("dodgerblue", {"Side (R)", "Front"}),
         }
         for name, pts in measurements.get("_linear_polylines", {}).items():
             cfg = _linear_cfg.get(name)
@@ -1953,7 +2102,8 @@ def render_4view(mesh, measurements, output_path, title="", model_label="",
                         ("Neck", ["neck_cm"]),
                         ("Shoulder W", ["shoulder_width_cm"]),
                         ("Sleeve", ["sleeve_length_cm"]),
-                        ("Crotch", ["crotch_length_cm"])]:
+                        ("Crotch", ["crotch_length_cm"]),
+                        ("Shirt", ["shirt_length_cm"])]:
         val = 0
         for key in keys:
             val = measurements.get(key, 0)

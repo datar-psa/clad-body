@@ -14,7 +14,7 @@ Neither Anny nor MHR ship with a measurement library. You get a mesh with 14–1
 
 - **Load** Anny bodies from phenotype params, MHR bodies from SAM 3D Body params
 - **Measure** circumferences (bust, waist, hips, thigh, knee, calf, upper arm, wrist, neck) via ISO 8559-1 plane sweep with convex hull tape-measure simulation
-- **Linear measurements** — shoulder width, sleeve length, inseam
+- **Linear measurements** — shoulder width, sleeve length, inseam, crotch length, shirt length
 - **Body composition** — volume, mass, BMI, body fat estimation
 - **Render** 4-view PNGs with measurement contour overlays
 
@@ -99,6 +99,8 @@ All circumference measurements follow [ISO 8559-1:2017](https://www.iso.org/stan
 | Shoulder width | §5.4.2 | Acromion-to-acromion arc over C7 vertebra | <img src="assets/contours/shoulder_width.png" width="80"> |
 | Sleeve length | §5.7.8 | Acromion to wrist via elbow | <img src="assets/contours/sleeve_length.png" width="80"> |
 | Inseam | §5.1.15 | Crotch point to floor | <img src="assets/contours/inseam.png" width="80"> |
+| Crotch length | §5.1.11 | Surface path from front waist through perineum to back waist | <img src="assets/contours/crotch.png" width="80"> |
+| Shirt length | — (tailor) | Front surface trace from shoulder to crotch level (convex hull) | <img src="assets/contours/shirt_length.png" width="80"> |
 
 ## Optional extras
 

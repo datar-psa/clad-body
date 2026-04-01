@@ -41,6 +41,7 @@ CIRC_KEYS = [
     "upperarm_cm", "wrist_cm", "neck_cm",
     "inseam_cm", "sleeve_length_cm",
     "crotch_length_cm", "front_rise_cm", "back_rise_cm",
+    "shirt_length_cm",
 ]
 
 BODY_COMP_TOLERANCES = {

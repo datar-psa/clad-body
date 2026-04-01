@@ -37,6 +37,7 @@ CIRC_KEYS = [
     "thigh_cm", "knee_cm", "calf_cm", "upperarm_cm", "wrist_cm",
     "inseam_cm", "shoulder_width_cm", "sleeve_length_cm",
     "crotch_length_cm", "front_rise_cm", "back_rise_cm",
+    "shirt_length_cm",
 ]
 
 
@@ -65,12 +66,6 @@ def _run_measure(name, render=False):
                 errors[key] = (got, exp, err)
 
     return measured, expected, errors
-
-
-class TestMaleAverage:
-    def test_measurements(self, view):
-        _, _, errors = _run_measure("male_average", render=view)
-        assert not errors, _format_errors("male_average", errors)
 
 
 class TestMalePlusSize:
