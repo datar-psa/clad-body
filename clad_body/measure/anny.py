@@ -696,7 +696,8 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
 
         # Shirt length: side neck → crotch along front body contour
         shirt_cm, shirt_pts = measure_shirt_length(
-            joints, mesh_tri, measurements.get("_inseam_z", 0))
+            joints, mesh_tri, measurements.get("_inseam_z", 0),
+            measurements=measurements)
         measurements["shirt_length_cm"] = shirt_cm
         if shirt_pts is not None:
             measurements["_shirt_length_pts"] = shirt_pts

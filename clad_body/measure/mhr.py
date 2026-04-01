@@ -253,7 +253,8 @@ def measure_mhr(mesh_or_body, render_path=None, title=""):
 
         # Shirt length: side neck → crotch along front body contour
         shirt_cm, shirt_pts = measure_shirt_length(
-            joints, mesh, measurements.get("_inseam_z", 0))
+            joints, mesh, measurements.get("_inseam_z", 0),
+            measurements=measurements)
         measurements["shirt_length_cm"] = shirt_cm
         if shirt_pts is not None:
             measurements["_shirt_length_pts"] = shirt_pts

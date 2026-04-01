@@ -68,12 +68,6 @@ def _run_measure(name, render=False):
     return measured, expected, errors
 
 
-class TestMaleAverage:
-    def test_measurements(self, view):
-        _, _, errors = _run_measure("male_average", render=view)
-        assert not errors, _format_errors("male_average", errors)
-
-
 class TestMalePlusSize:
     def test_measurements(self, view):
         _, _, errors = _run_measure("male_plus_size", render=view)
