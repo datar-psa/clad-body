@@ -227,5 +227,5 @@ def load_anny_from_params(
         vertices=verts_np,
         faces=faces_np,
         source="params",
-        phenotype_params={k: v for k, v in params.items() if not k.startswith("_")},
+        phenotype_params=dict(params),  # full copy including _local_changes
     )

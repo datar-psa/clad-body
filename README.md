@@ -2,7 +2,7 @@
 
 Body loaders and ISO 8559-1 measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models.
 
-Neither Anny nor MHR ship with a measurement library. You get a mesh with 14–18K vertices and no standard way to extract waist circumference from it. This package fills that gap.
+Neither Anny nor MHR ship with a measurement library. You get a mesh with 14-18K vertices and no standard way to extract waist circumference from it. This package fills that gap.
 
 <p align="center">
   <img src="assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
@@ -37,84 +37,138 @@ pip install 'clad-body[render]'
 
 ## Quick start
 
-### Measure an Anny body
-
 ```python
-from clad_body.measure.anny import measure_body
+from clad_body.load import load_anny_from_params
+from clad_body.measure import measure
 
-params = {
-    "gender": 0.5, "age": 0.5, "muscle": 0.5,
-    "weight": 0.5, "height": 0.5, "proportions": 0.5,
-    "cupsize": 0.5, "firmness": 0.5,
-    "african": 0.33, "asian": 0.33, "caucasian": 0.33,
-}
+body = load_anny_from_params(params)
 
-measurements = measure_body(params, render_path="body_4view.png")
-print(f"Bust: {measurements['bust_cm']:.1f} cm")
-print(f"Waist: {measurements['waist_cm']:.1f} cm")
-print(f"Hips: {measurements['hips_cm']:.1f} cm")
+m = measure(body)                                  # all measurements
+m = measure(body, preset="core")                   # 4: height, bust, waist, hip
+m = measure(body, preset="standard")               # 9: + thigh, upperarm, shoulder, sleeve, inseam
+m = measure(body, preset="tops")                   # garment-relevant subset
+m = measure(body, only=["bust_cm", "hip_cm"])       # specific keys
+m = measure(body, tags={"type": "circumference", "region": "leg"})  # tag filter
+m = measure(body, render_path="body.png")          # with 4-view render
 ```
 
-### Measure an MHR body
+MHR works the same way:
 
 ```python
-from clad_body.load.mhr import load_mhr_from_params
-from clad_body.measure.mhr import measure_mhr
-
+from clad_body.load import load_mhr_from_params
 body = load_mhr_from_params("path/to/sam3d_params.json")
-measurements = measure_mhr(body, render_path="mhr_4view.png")
+m = measure(body)
 ```
 
-### Use MeshSlicer directly (no body model needed)
+## Public API
+
+| Import | What |
+|---|---|
+| `clad_body.load.load_anny_from_params` | Load Anny body from phenotype params |
+| `clad_body.load.load_mhr_from_params` | Load MHR body from SAM 3D Body params |
+| `clad_body.load.AnnyBody`, `MhrBody` | Body dataclasses |
+| `clad_body.measure.measure` | Measure a body (one entry point) |
+| `clad_body.measure.REGISTRY` | All measurement definitions (`dict[str, MeasurementDef]`) |
+| `clad_body.measure.list_measurements` | Query measurements by tags |
+| `clad_body.measure.MeasurementDef` | Measurement definition type |
+
+### Selection
+
+`measure()` accepts `preset`, `only`, `tags`, `exclude`. Precedence: `only` > `preset` > `tags` > default (`"all"`). `exclude` is applied last. Only runs computation groups needed for the requested keys.
+
+### Introspection
 
 ```python
-import trimesh
-from clad_body.measure.common import MeshSlicer
+from clad_body.measure import REGISTRY, list_measurements
 
-mesh = trimesh.load("body.obj")
-slicer = MeshSlicer(mesh)
+REGISTRY["bust_cm"].description   # self-measurement instructions
+REGISTRY["bust_cm"].iso_ref       # "5.3.4"
+REGISTRY["bust_cm"].type          # "circumference"
 
-# Circumference at a specific height (metres)
-circumference = slicer.circumference_at_z(0.95)  # waist level
-print(f"Circumference: {circumference * 100:.1f} cm")
+list_measurements(type="circumference", region="leg")   # [thigh, knee, calf]
 ```
 
-## Measurements
+## Measurement registry
 
-All circumference measurements follow [ISO 8559-1:2017](https://www.iso.org/standard/61686.html) conventions. Circumferences use convex hull projection to simulate a tape measure wrapping around the body.
+Every measurement is tagged across 5 dimensions. Each carries a human-readable `description` for self-measurement instructions and i18n key mapping.
 
-| Measurement | ISO 8559-1 | Method | |
+### Tags
+
+| Dimension | Values |
+|---|---|
+| **type** | `circumference`, `length`, `scalar` |
+| **standard** | `iso` (ISO 8559-1), `tailor` (industry standard), `derived` (computed) |
+| **region** | `neck`, `torso`, `abdomen`, `arm`, `leg`, `full_body` |
+| **tier** | `core` > `standard` > `enhanced` > `fitted` (cumulative) |
+| **garments** | `tops`, `bottoms`, `dresses`, `outerwear`, `underwear` |
+
+### Tier presets
+
+| Preset | Count | Adds |
+|---|---|---|
+| `core` | 4 | height, bust, waist, hip |
+| `standard` | 9 | thigh, upperarm, shoulder_width, sleeve_length, inseam |
+| `enhanced` | 17 | neck, underbust, stomach, mass, volume, bmi, body_fat, belly_depth |
+| `fitted`/`all` | 24 | knee, calf, wrist, crotch_length, front_rise, back_rise, shirt_length |
+
+### Full measurement table
+
+Garment codes: **T**ops, **B**ottoms, **D**resses, **O**uterwear, **U**nderwear.
+
+| | Key | Description | ISO | Type | Std | Region | Tier | Grp | Gar |
+|---|---|---|---|---|---|---|---|---|---|
+| <img src="assets/contours/bust.png" width="50"> | `height_cm` | Vertical distance from floor to top of head. Stand erect, feet together. | 5.1.1 | scalar | iso | full_body | core | A | all |
+| <img src="assets/contours/bust.png" width="50"> | `bust_cm` | Horizontal circumference at the fullest part of the chest/bust. Tape under armpits, across bust prominence, level and snug. | 5.3.4 | circ | iso | torso | core | A | T,D,O,U |
+| <img src="assets/contours/waist.png" width="50"> | `waist_cm` | Horizontal circumference at natural waist, midway between lowest rib and hip bone. Tape at navel height, parallel to floor. | 5.3.10 | circ | iso | torso | core | A | all |
+| <img src="assets/contours/hip.png" width="50"> | `hip_cm` | Horizontal circumference at greatest buttock prominence. Feet together, tape around widest part of hips. | 5.3.13 | circ | iso | abdomen | core | A | B,D,O,U |
+| <img src="assets/contours/thigh.png" width="50"> | `thigh_cm` | Horizontal circumference at fullest part of upper thigh, just below gluteal fold. Stand with legs slightly apart. | 5.3.20 | circ | iso | leg | std | B | B |
+| <img src="assets/contours/upperarm.png" width="50"> | `upperarm_cm` | Circumference at fullest part of upper arm, midway between shoulder and elbow. Arm relaxed, not flexed. | 5.3.16 | circ | iso | arm | std | B | T,O |
+| <img src="assets/contours/shoulder_width.png" width="50"> | `shoulder_width_cm` | Distance between left and right shoulder points (acromion), measured across back over C7 vertebra. | 5.4.2 | length | iso | torso | std | C | T,D,O |
+| <img src="assets/contours/sleeve_length.png" width="50"> | `sleeve_length_cm` | Distance from shoulder point along outside of slightly bent arm, over elbow, to wrist bone. | 5.7.8 | length | iso | arm | std | C | T,O |
+| <img src="assets/contours/inseam.png" width="50"> | `inseam_cm` | Distance from crotch point straight down to floor. Stand erect, feet slightly apart. | 5.1.15 | length | iso | leg | std | E | B |
+| <img src="assets/contours/neck.png" width="50"> | `neck_cm` | Circumference just below Adam's apple, perpendicular to neck axis. Comfortably snug. | 5.3.2 | circ | iso | neck | enh | D | T |
+| <img src="assets/contours/underbust.png" width="50"> | `underbust_cm` | Horizontal circumference directly below breast tissue, at inframammary crease. Bra band size. | 5.3.6 | circ | iso | torso | enh | A | T,D,U |
+| <img src="assets/contours/stomach.png" width="50"> | `stomach_cm` | Horizontal circumference at maximum anterior protrusion of abdomen, usually at/below navel. | -- | circ | tailor | abdomen | enh | A | T,B |
+| | `mass_kg` | Total body mass in kilograms. | 5.6.1 | scalar | iso | full_body | enh | G | -- |
+| | `volume_m3` | Total body volume in cubic metres, from mesh geometry. | -- | scalar | derived | full_body | enh | G | -- |
+| | `bmi` | Body mass index: mass (kg) / height (m)^2. | -- | scalar | derived | full_body | enh | G | -- |
+| | `body_fat_pct` | Estimated body fat % via Navy/Weltman equations from circumferences. | -- | scalar | derived | full_body | enh | G | -- |
+| | `belly_depth_cm` | How much belly protrudes forward vs underbust/ribcage. Negative = belly prominence. | -- | scalar | derived | abdomen | enh | A | T,B |
+| <img src="assets/contours/knee.png" width="50"> | `knee_cm` | Horizontal circumference at centre of kneecap. Bend knee slightly (~45 degrees). | 5.3.22 | circ | iso | leg | fit | B | B |
+| <img src="assets/contours/calf.png" width="50"> | `calf_cm` | Maximum horizontal circumference of the calf. Stand with legs slightly apart. | 5.3.24 | circ | iso | leg | fit | B | B |
+| <img src="assets/contours/wrist.png" width="50"> | `wrist_cm` | Circumference at wrist, at prominent bone on little finger side (ulnar styloid). | 5.3.19 | circ | iso | arm | fit | D | T |
+| <img src="assets/contours/crotch.png" width="50"> | `crotch_length_cm` | Distance from front waist centre, through crotch, to back waist centre. Follow body surface. | 5.4.18 | length | iso | leg | fit | E | B |
+| | `front_rise_cm` | Front waist to crotch point, along front body surface. Trouser front panel length. | -- | length | tailor | leg | fit | E | B |
+| | `back_rise_cm` | Back waist to crotch point, along back body surface. Trouser back panel length. | -- | length | tailor | leg | fit | E | B |
+| <img src="assets/contours/shirt_length.png" width="50"> | `shirt_length_cm` | Side neck point down along front body contour to crotch level. Follow chest/stomach curve. | -- | length | tailor | torso | fit | F | T |
+
+Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). Anny-only: underbust, mass, volume, bmi, body_fat, belly_depth.
+
+### Computation groups
+
+| Group | Measurements | Cost | Deps |
 |---|---|---|---|
-| Bust | §5.3.4 | Maximum horizontal circumference in bust region (68–76% height) | <img src="assets/contours/bust.png" width="80"> |
-| Underbust | §5.3.6 | Circumference directly below the bust prominence | <img src="assets/contours/underbust.png" width="80"> |
-| Waist | §5.3.10 | Circumference at anatomical midpoint (~61% height) | <img src="assets/contours/waist.png" width="80"> |
-| Stomach | — | Maximum circumference between waist and hips | <img src="assets/contours/stomach.png" width="80"> |
-| Hips | §5.3.13 | Maximum horizontal circumference in hip region (46–54% height) | <img src="assets/contours/hip.png" width="80"> |
-| Thigh | §5.3.20 | Maximum circumference from separate leg contours | <img src="assets/contours/thigh.png" width="80"> |
-| Knee | §5.3.22 | Circumference at mid-patella level | <img src="assets/contours/knee.png" width="80"> |
-| Calf | §5.3.24 | Maximum circumference of the lower leg | <img src="assets/contours/calf.png" width="80"> |
-| Upper arm | §5.3.16 | Maximum circumference from separate arm contours | <img src="assets/contours/upperarm.png" width="80"> |
-| Wrist | §5.3.19 | Circumference over the wrist bones (perpendicular to forearm) | <img src="assets/contours/wrist.png" width="80"> |
-| Neck | §5.3.2 | Minimum circumference in neck region | <img src="assets/contours/neck.png" width="80"> |
-| Shoulder width | §5.4.2 | Acromion-to-acromion arc over C7 vertebra | <img src="assets/contours/shoulder_width.png" width="80"> |
-| Sleeve length | §5.7.8 | Acromion to wrist via elbow | <img src="assets/contours/sleeve_length.png" width="80"> |
-| Inseam | §5.1.15 | Crotch point to floor | <img src="assets/contours/inseam.png" width="80"> |
-| Crotch length | §5.1.11 | Surface path from front waist through perineum to back waist | <img src="assets/contours/crotch.png" width="80"> |
-| Shirt length | — (tailor) | Front surface trace from shoulder to crotch level (convex hull) | <img src="assets/contours/shirt_length.png" width="80"> |
+| **A** Core torso | height, bust, waist, hip, stomach, underbust, belly_depth | Cheap | -- |
+| **B** Limb sweeps | thigh, knee, calf, upperarm | Expensive | -- |
+| **C** Joint linear | shoulder_width, sleeve_length | Expensive | -- |
+| **D** Perpendicular | neck, wrist | Medium | -- |
+| **E** Mesh geometry | inseam, crotch_length, front_rise, back_rise | Medium | -- |
+| **F** Surface trace | shirt_length | Medium | E |
+| **G** Body composition | volume, mass, bmi, body_fat | Cheap | D |
 
 ## Optional extras
 
 | Extra | What it enables |
 |---|---|
-| `[anny]` | `clad_body.load.anny` — generate Anny bodies from phenotype params |
-| `[mhr]` | `clad_body.load.mhr` — generate MHR bodies from SAM 3D Body params |
-| `[render]` | `render_4view()` — matplotlib/pyrender 4-view body renders |
+| `[anny]` | Anny body loader (requires torch) |
+| `[mhr]` | MHR body loader (requires pymomentum) |
+| `[render]` | 4-view body renders (requires matplotlib, pyrender) |
 
-Without extras, `MeshSlicer` and the core measurement utilities work with any trimesh mesh — only numpy, scipy, and trimesh are required.
+Without extras, only numpy, scipy, and trimesh are required.
 
 ## Demo
 
-Try the full pipeline (body reconstruction + measurements) at [clad.you/size-aware/size-me](https://clad.you/size-aware/size-me).
+Try the full pipeline at [clad.you/size-aware/size-me](https://clad.you/size-aware/size-me).
 
 ## Background
 

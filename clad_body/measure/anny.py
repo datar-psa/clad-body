@@ -32,32 +32,52 @@ except ImportError as _e:
         "clad_body.measure.anny requires the [anny] extra: pip install 'clad-body[anny]'"
     ) from _e
 
-from clad_body.measure.common import (
-    ANNY_JOINT_MAP,
-    MAX_TORSO_X_EXTENT,
+from clad_body.measure._slicer import MAX_TORSO_X_EXTENT, torso_circumference_at_z
+from clad_body.measure._circumferences import (
     _front_y_at_z,
-    extract_joints_from_names,
-    extract_linear_measurement_polylines,
-    extract_measurement_contours,
     measure_calf,
-    measure_crotch_length,
     measure_knee,
-    measure_shirt_length,
-    measure_sleeve_length,
-    measure_inseam,
     measure_neck,
-    measure_shoulder_width,
     measure_stomach,
     measure_thigh,
     measure_upperarm,
     measure_wrist,
-    torso_circumference_at_z,
     torso_sweep_bust_hips,
-    load_target_measurements,
-    find_target_json,
-    print_comparison,
-    render_4view,
 )
+from clad_body.measure._lengths import (
+    extract_linear_measurement_polylines,
+    measure_crotch_length,
+    measure_inseam,
+    measure_shirt_length,
+    measure_shoulder_width,
+    measure_sleeve_length,
+)
+from clad_body.measure._render import extract_measurement_contours, render_4view
+from clad_body.measure._lengths import extract_joints_from_names
+from clad_body.measure._render import (
+    find_target_json,
+    load_target_measurements,
+    print_comparison,
+)
+
+# Canonical joint name mapping for Anny linear measurements.
+# Maps standard names to Anny bone name candidates.
+# NOTE: Shoulder bones are INSIDE the body. upperarm01 HEAD gives the correct
+# lateral (X) position for the shoulder/arm junction. The actual acromion
+# (bony shoulder tip) is found by find_acromion() (max Z above bone tail).
+ANNY_JOINT_MAP = {
+    "c7": ["neck01"],
+    "neck_base": ["neck01"],      # base of neck (C7 level, ~85% height)
+    "neck_mid": ["neck02"],       # neck01 tail = neck02 head (~86% height, Adam's apple)
+    "head": ["head"],             # top of neck / base of skull
+    "side_neck": ["shoulder01.L", "shoulder01.R"],  # shoulder01 head = clavicle tail (~82% height)
+    "l_shoulder": ["upperarm01.L"],
+    "r_shoulder": ["upperarm01.R"],
+    "l_elbow": ["lowerarm01.L"],
+    "r_elbow": ["lowerarm01.R"],
+    "l_wrist": ["wrist.L"],
+    "r_wrist": ["wrist.R"],
+}
 
 # Arm/hand bone indices (shoulder01 through all fingers, both sides).
 # Excludes clavicle (48, 74) which is at the torso boundary.
@@ -567,7 +587,7 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
     hip_anchor_z = float(mesh_verts[anthro.hip_vertex_indices, 2].mean())
 
     # Bust (torso-only mesh) and hips (full mesh) via plane sweep
-    bust_cm, bust_z, hips_cm, hip_z = torso_sweep_bust_hips(
+    bust_cm, bust_z, hip_cm, hip_z = torso_sweep_bust_hips(
         mesh_tri, torso_mesh, waist_z, height,
         bust_anchor_z=bust_anchor_z, hip_anchor_z=hip_anchor_z)
 
@@ -575,7 +595,7 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
     measurements = {"height_cm": height * 100}
 
     # Hip
-    measurements["hips_cm"] = hips_cm
+    measurements["hip_cm"] = hip_cm
     measurements["_hip_z"] = hip_z
     measurements["_hip_pct"] = (hip_z / height * 100) if hip_z > 0 else 0
 
@@ -714,7 +734,7 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
         bf_pct = estimate_body_fat_pct(
             height_cm=measurements["height_cm"],
             waist_cm=measurements["waist_cm"],
-            hip_cm=measurements["hips_cm"],
+            hip_cm=measurements["hip_cm"],
             neck_cm=neck,
             mass_kg=measurements["mass_kg"],
             gender=gender_str,
@@ -734,6 +754,199 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
             mesh_tri, measurements, torso_mesh=torso_mesh)
 
     # Internal metadata (kept for backward compat)
+    measurements["_mesh_tri"] = mesh_tri
+    measurements["_torso_mesh"] = torso_mesh
+    measurements["_anthro"] = anthro
+
+    if render_path:
+        render_4view(mesh_tri, measurements, render_path,
+                     title=title, model_label="Anny", torso_mesh=torso_mesh)
+
+    return measurements
+
+
+def _measure_anny(body, *, groups, render_path=None, title=""):
+    """Internal: measure an AnnyBody with selective computation groups.
+
+    Called by ``clad_body.measure.measure()``. Do not call directly.
+    """
+    from clad_body.measure import (
+        GROUP_A, GROUP_B, GROUP_C, GROUP_D, GROUP_E, GROUP_F, GROUP_G,
+    )
+    if body.phenotype_params is None:
+        raise ValueError(
+            "AnnyBody.phenotype_params is required for measurement. "
+            "Use load_anny_from_params() to create the body."
+        )
+    verts, model = generate_anny_mesh_from_params(body.phenotype_params)
+    anthro = setup_extended_anthro(model)
+    mesh_tri = _anny_to_trimesh(verts, model)
+    mesh_verts = np.array(mesh_tri.vertices)
+    height = mesh_verts[:, 2].max()
+
+    arm_mask = build_arm_mask(model)
+    torso_mesh = build_torso_mesh(mesh_tri, arm_mask)
+
+    measurements = {"height_cm": height * 100}
+
+    # ── Group A: Core torso ──────────────────────────────────────────────
+    if GROUP_A in groups:
+        waist_cm = anthro.waist_circumference(verts).item() * 100
+        waist_z = float(mesh_verts[anthro.waist_vertex_indices, 2].mean())
+        bust_anchor_z = _breast_prominence_z(model, mesh_verts)
+        hip_anchor_z = float(mesh_verts[anthro.hip_vertex_indices, 2].mean())
+
+        bust_cm, bust_z, hip_cm, hip_z = torso_sweep_bust_hips(
+            mesh_tri, torso_mesh, waist_z, height,
+            bust_anchor_z=bust_anchor_z, hip_anchor_z=hip_anchor_z)
+
+        measurements["hip_cm"] = hip_cm
+        measurements["_hip_z"] = hip_z
+        measurements["_hip_pct"] = (hip_z / height * 100) if hip_z > 0 else 0
+        measurements["bust_cm"] = bust_cm
+        measurements["_bust_z"] = bust_z
+        measurements["_bust_pct"] = (bust_z / height * 100) if bust_z > 0 else 0
+        measurements["waist_cm"] = waist_cm
+        measurements["_waist_z"] = waist_z
+        measurements["_waist_pct"] = waist_z / height * 100
+
+        stomach_cm, stomach_z, stomach_pct, belly_front_y = measure_stomach(
+            torso_mesh, waist_z, hip_anchor_z, height)
+        measurements["stomach_cm"] = stomach_cm
+        measurements["_stomach_z"] = stomach_z
+        measurements["_stomach_pct"] = stomach_pct
+        measurements["_belly_front_y"] = belly_front_y
+
+        fold_z = breast_floor_z(model, mesh_verts)
+        if fold_z is not None and fold_z > 0:
+            underbust_z = fold_z
+            underbust_cm = torso_circumference_at_z(
+                torso_mesh, underbust_z, max_x_extent=MAX_TORSO_X_EXTENT,
+                combine_fragments=True) * 100
+        else:
+            underbust_z, underbust_cm = 0.0, 0.0
+        measurements["underbust_cm"] = underbust_cm
+        measurements["_underbust_z"] = underbust_z
+        measurements["_underbust_pct"] = (underbust_z / height * 100) if underbust_z > 0 else 0
+
+        belly_depth_cm = 0.0
+        if belly_front_y is not None and underbust_z > 0:
+            ub_front_y = _front_y_at_z(torso_mesh, underbust_z)
+            if ub_front_y is not None:
+                belly_depth_cm = (belly_front_y - ub_front_y) * 100
+        measurements["belly_depth_cm"] = belly_depth_cm
+
+    # Joints (needed by groups C, D, F, G)
+    joints = _extract_anny_joints(model)
+
+    # ── Group B: Limb sweeps ─────────────────────────────────────────────
+    if GROUP_B in groups:
+        thigh_cm, thigh_z, thigh_pct = measure_thigh(mesh_tri, height)
+        measurements["thigh_cm"] = thigh_cm
+        measurements["_thigh_z"] = thigh_z
+        measurements["_thigh_pct"] = thigh_pct
+
+        knee_cm, knee_z, knee_pct = measure_knee(mesh_tri, height)
+        measurements["knee_cm"] = knee_cm
+        measurements["_knee_z"] = knee_z
+        measurements["_knee_pct"] = knee_pct
+
+        calf_cm, calf_z, calf_pct = measure_calf(mesh_tri, height)
+        measurements["calf_cm"] = calf_cm
+        measurements["_calf_z"] = calf_z
+        measurements["_calf_pct"] = calf_pct
+
+        upperarm_cm, upperarm_z, upperarm_pct = measure_upperarm(mesh_tri, height)
+        measurements["upperarm_cm"] = upperarm_cm
+        measurements["_upperarm_z"] = upperarm_z
+        measurements["_upperarm_pct"] = upperarm_pct
+
+    # ── Group D: Perpendicular (neck, wrist) ─────────────────────────────
+    if GROUP_D in groups:
+        neck_cm, neck_z, neck_pct, neck_pts = measure_neck(
+            mesh_tri, height, joints=joints)
+        measurements["neck_cm"] = neck_cm
+        measurements["_neck_z"] = neck_z
+        measurements["_neck_pct"] = neck_pct
+        if neck_pts is not None:
+            measurements["_neck_contour_pts"] = neck_pts
+
+        wrist_cm, wrist_z, wrist_pct = measure_wrist(mesh_tri, height, joints=joints)
+        measurements["wrist_cm"] = wrist_cm
+        measurements["_wrist_z"] = wrist_z
+        measurements["_wrist_pct"] = wrist_pct
+
+    # ── Group E: Mesh geometry (inseam, crotch) ──────────────────────────
+    if GROUP_E in groups:
+        inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
+        measurements["inseam_cm"] = inseam_cm
+        measurements["_inseam_z"] = inseam_z
+        measurements["_inseam_pct"] = inseam_pct
+
+        crotch_len, front_rise, back_rise, crotch_f_pts, crotch_b_pts = \
+            measure_crotch_length(
+                mesh_tri, height,
+                measurements.get("_waist_z", 0), inseam_z)
+        measurements["crotch_length_cm"] = crotch_len
+        measurements["front_rise_cm"] = front_rise
+        measurements["back_rise_cm"] = back_rise
+        if crotch_f_pts is not None:
+            measurements["_crotch_front_pts"] = crotch_f_pts
+        if crotch_b_pts is not None:
+            measurements["_crotch_back_pts"] = crotch_b_pts
+
+    # ── Group C: Joint linear (shoulder, sleeve) ─────────────────────────
+    if GROUP_C in groups:
+        sw_cm, sw_arc = measure_shoulder_width(
+            joints, mesh=mesh_tri, acromion_fn=find_acromion)
+        measurements["shoulder_width_cm"] = sw_cm
+        if sw_arc is not None:
+            measurements["_shoulder_arc_pts"] = sw_arc
+        measurements["sleeve_length_cm"] = measure_sleeve_length(
+            joints, mesh=mesh_tri, acromion_fn=find_acromion)
+
+    # ── Group F: Surface trace (shirt length) ────────────────────────────
+    if GROUP_F in groups:
+        shirt_cm, shirt_pts = measure_shirt_length(
+            joints, mesh_tri, measurements.get("_inseam_z", 0),
+            measurements=measurements)
+        measurements["shirt_length_cm"] = shirt_cm
+        if shirt_pts is not None:
+            measurements["_shirt_length_pts"] = shirt_pts
+
+    # ── Group G: Body composition ────────────────────────────────────────
+    if GROUP_G in groups:
+        measurements["volume_m3"] = anthro.volume(verts).item()
+        measurements["mass_kg"] = anthro.mass(verts).item()
+        measurements["bmi"] = anthro.bmi(verts).item()
+
+        neck = measurements.get("neck_cm", 0)
+        if neck > 0:
+            gender_str = _infer_gender(model, verts)
+            bf_pct = estimate_body_fat_pct(
+                height_cm=measurements["height_cm"],
+                waist_cm=measurements.get("waist_cm", 0),
+                hip_cm=measurements.get("hip_cm", 0),
+                neck_cm=neck,
+                mass_kg=measurements["mass_kg"],
+                gender=gender_str,
+            )
+            measurements["body_fat_pct"] = bf_pct
+            dens = body_density_from_bf(bf_pct)
+            measurements["estimated_density"] = dens
+            measurements["density_corrected_mass_kg"] = density_corrected_mass(
+                measurements["mass_kg"], dens, gender_str)
+
+    # ── Visualization ────────────────────────────────────────────────────
+    # Polylines + contours when we have enough data
+    has_linear = GROUP_C in groups or GROUP_E in groups
+    if has_linear:
+        measurements["_linear_polylines"] = extract_linear_measurement_polylines(
+            mesh_tri, measurements, joints)
+    measurements["mesh"] = mesh_tri
+    measurements["contours"] = extract_measurement_contours(
+        mesh_tri, measurements, torso_mesh=torso_mesh)
+
     measurements["_mesh_tri"] = mesh_tri
     measurements["_torso_mesh"] = torso_mesh
     measurements["_anthro"] = anthro
@@ -833,7 +1046,7 @@ def main():
         print(f"Height:        {measurements['height_cm']:>6.1f} cm")
         print(f"Bust:          {measurements['bust_cm']:>6.1f} cm  (at {measurements['_bust_pct']:.0f}% height)")
         print(f"Waist:         {measurements['waist_cm']:>6.1f} cm  (at {measurements['_waist_pct']:.0f}% height)")
-        print(f"Hips:          {measurements['hips_cm']:>6.1f} cm  (at {measurements['_hip_pct']:.0f}% height)")
+        print(f"Hips:          {measurements['hip_cm']:>6.1f} cm  (at {measurements['_hip_pct']:.0f}% height)")
         if measurements.get("stomach_cm", 0) > 0:
             print(f"Stomach:       {measurements['stomach_cm']:>6.1f} cm  (at {measurements['_stomach_pct']:.0f}% height)")
         if measurements.get("thigh_cm", 0) > 0:

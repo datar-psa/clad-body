@@ -234,7 +234,8 @@ np.savez(sys.argv[1], vertices=v, faces=faces,
     # Extract canonical joint positions (same coordinate transform as vertices)
     joints = None
     if joint_pos_raw is not None and joint_names_raw is not None:
-        from clad_body.measure.common import MHR_JOINT_MAP, extract_joints_from_names
+        from clad_body.measure.mhr import MHR_JOINT_MAP
+        from clad_body.measure._lengths import extract_joints_from_names
         # Joint positions are in MHR native Y-up cm → convert to Z-up m
         joint_pos_canonical = _mhr_yup_cm_to_canonical(joint_pos_raw)
         # Apply same XY centering as vertices

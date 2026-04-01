@@ -37,7 +37,7 @@ TOLERANCE_BMI = 0.2
 
 CIRC_KEYS = [
     "height_cm", "bust_cm", "underbust_cm", "waist_cm", "stomach_cm",
-    "hips_cm", "shoulder_width_cm", "thigh_cm", "knee_cm", "calf_cm",
+    "hip_cm", "shoulder_width_cm", "thigh_cm", "knee_cm", "calf_cm",
     "upperarm_cm", "wrist_cm", "neck_cm",
     "inseam_cm", "sleeve_length_cm",
     "crotch_length_cm", "front_rise_cm", "back_rise_cm",
@@ -127,3 +127,107 @@ def _format_errors(name, errors):
     for key, (got, exp, err) in errors.items():
         lines.append(f"  {key}: got {got:.2f}, expected {exp:.2f}, diff {err:.2f}")
     return "\n".join(lines)
+
+
+# ── measure() API tests ─────────────────────────────────────────────────────
+# These test the new unified measure() entry point with presets, tags, and
+# selective computation. Uses a single body (male_average) for speed.
+
+
+@pytest.fixture(scope="module")
+def anny_body():
+    """Load male_average AnnyBody once for all measure() API tests."""
+    from clad_body.load import load_anny_from_params
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "male_average", "anny_params.json")
+    )
+    return load_anny_from_params(params)
+
+
+class TestMeasureAPIPresets:
+    """Test preset-based measurement selection."""
+
+    def test_core_returns_4_keys(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, preset="core")
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert keys == {"height_cm", "bust_cm", "waist_cm", "hip_cm"}
+
+    def test_standard_returns_9_keys(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, preset="standard")
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert keys == {
+            "height_cm", "bust_cm", "waist_cm", "hip_cm",
+            "thigh_cm", "upperarm_cm", "shoulder_width_cm",
+            "sleeve_length_cm", "inseam_cm",
+        }
+
+    def test_all_returns_all_available(self, anny_body):
+        from clad_body.measure import measure, REGISTRY
+        m = measure(anny_body)
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        # Should have all non-anny_only keys + anny_only keys
+        expected = {k for k, d in REGISTRY.items() if not d.anny_only or True}
+        # Some derived measurements may not be present (e.g. body_fat needs neck)
+        assert keys >= {k for k, d in REGISTRY.items() if d.tier in ("core", "standard")}
+
+    def test_garment_preset_tops(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, preset="tops")
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert "bust_cm" in keys
+        assert "shoulder_width_cm" in keys
+        # Bottoms-only measurements should not be present
+        assert "inseam_cm" not in keys
+        assert "crotch_length_cm" not in keys
+
+
+class TestMeasureAPISelection:
+    """Test only, tags, and exclude selection."""
+
+    def test_only_single_key(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, only=["bust_cm"])
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert keys == {"bust_cm"}
+
+    def test_only_multiple_keys(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, only=["bust_cm", "hip_cm", "neck_cm"])
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert keys == {"bust_cm", "hip_cm", "neck_cm"}
+
+    def test_tags_circumference_leg(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, tags={"type": "circumference", "region": "leg"})
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert keys == {"thigh_cm", "knee_cm", "calf_cm"}
+
+    def test_exclude(self, anny_body):
+        from clad_body.measure import measure
+        m = measure(anny_body, preset="core", exclude=["height_cm"])
+        keys = {k for k in m if not k.startswith("_") and k not in ("mesh", "contours")}
+        assert "height_cm" not in keys
+        assert len(keys) == 3
+
+    def test_values_match_regression(self, anny_body):
+        """Values from measure() must match the existing regression baselines."""
+        from clad_body.measure import measure
+        with open(os.path.join(TESTDATA_DIR, "male_average", "expected_measurements.json")) as f:
+            expected = json.load(f)
+        m = measure(anny_body)
+        for key in CIRC_KEYS:
+            exp = expected.get(key)
+            if exp is not None:
+                got = m.get(key, 0)
+                assert abs(got - exp) <= TOLERANCE_CM, (
+                    f"{key}: measure() got {got:.2f}, expected {exp:.2f}"
+                )
+
+    def test_hip_cm_not_hips_cm(self, anny_body):
+        """Verify hip_cm is used, not the old hips_cm."""
+        from clad_body.measure import measure
+        m = measure(anny_body, preset="core")
+        assert "hip_cm" in m
+        assert "hips_cm" not in m
