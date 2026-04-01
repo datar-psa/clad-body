@@ -544,6 +544,9 @@ def generate_anny_mesh_from_params(params_dict: dict, device="cpu") -> tuple[tor
 def measure_body_from_verts(verts, model, render_path=None, title="", fast=False):
     """Measure an Anny body from pre-generated vertices.
 
+    .. deprecated::
+        Use ``clad_body.measure.measure(body, preset=...)`` instead.
+
     Same measurements as measure_body() but skips mesh generation — use when you
     already have vertices (e.g. after scaling or during optimization).
 
@@ -961,7 +964,13 @@ def _measure_anny(body, *, groups, render_path=None, title=""):
 def measure_body(params_dict: dict, render_path=None, title="") -> dict:
     """Extract body measurements from phenotype parameters.
 
-    Generates Anny mesh from params, then measures via measure_body_from_verts().
+    .. deprecated::
+        Use ``clad_body.measure.measure(body)`` instead::
+
+            from clad_body.load import load_anny_from_params
+            from clad_body.measure import measure
+            body = load_anny_from_params(params)
+            m = measure(body, render_path="out.png")
 
     Args:
         params_dict: Anny phenotype parameters (from load_phenotype_params)

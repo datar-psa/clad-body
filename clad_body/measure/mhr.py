@@ -123,8 +123,13 @@ def find_acromion(verts, shoulder_joint, side="left"):
 def measure_mhr(mesh_or_body, render_path=None, title=""):
     """Extract body measurements from MHR mesh.
 
-    Finds hip and bust via max circumference in their regions (ISO 8559),
-    waist at fixed height, thigh and upperarm from limb contours.
+    .. deprecated::
+        Use ``clad_body.measure.measure(body)`` instead::
+
+            from clad_body.load import load_mhr_from_params
+            from clad_body.measure import measure
+            body = load_mhr_from_params("path/to/params.json")
+            m = measure(body)
 
     Args:
         mesh_or_body: trimesh.Trimesh or MhrBody
