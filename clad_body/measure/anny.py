@@ -480,11 +480,17 @@ def load_phenotype_params(params_path: str) -> dict:
 def generate_anny_mesh_from_params(params_dict: dict, device="cpu") -> tuple[torch.Tensor, object]:
     """Generate Anny mesh in A-pose from phenotype parameters.
 
-    Supports local changes if stored under '_local_changes' key in params_dict.
+    .. deprecated::
+        Prefer :func:`clad_body.load.anny.load_anny_from_params` which
+        returns an :class:`AnnyBody` with cached model, mesh, and bone
+        data — ready for ``measure()`` without redundant work.
+
+    This function creates a **new** Anny model (~400 ms) on every call.
+    Use ``load_anny_from_params`` to avoid this cost.
 
     Returns:
-        vertices: (1, V, 3) torch tensor
-        model: Anny model instance
+        vertices: (1, V, 3) torch tensor (Y-up, Anny native)
+        model: Anny model instance (with ``_last_bone_heads/tails`` stashed)
     """
     device = torch.device(device)
 

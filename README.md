@@ -156,6 +156,26 @@ Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). 
 | **F** Surface trace | shirt_length | Medium | E |
 | **G** Body composition | volume, mass, bmi, body_fat | Cheap | D |
 
+## Performance
+
+`measure()` only runs the computation groups needed for the requested keys — use `only=` or `preset=` to skip expensive groups:
+
+```python
+measure(body)                         # all groups — ~800 ms
+measure(body, preset="core")          # group A only — ~100 ms
+measure(body, only=["bust_cm"])       # group A only — ~100 ms
+measure(body, only=["shoulder_width_cm"])  # groups A + C — ~200 ms
+```
+
+### GPU acceleration
+
+`measure()` accepts a `device` parameter (`None` = auto-detect CUDA):
+
+```python
+measure(body, only=["bust_cm"], device="cuda")  # GPU forward pass
+measure(body, device=None)                       # auto: CUDA if available
+```
+
 ## Optional extras
 
 | Extra | What it enables |

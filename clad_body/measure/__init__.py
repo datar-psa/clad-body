@@ -2,13 +2,20 @@
 
 Public API::
 
-    from clad_body.measure import measure, REGISTRY, list_measurements, MeasurementDef
+    from clad_body.load.anny import load_anny_from_params
+    from clad_body.measure import measure
 
-    body = load_anny_from_params(params)
-    m = measure(body)                              # all measurements
+    body = load_anny_from_params(params)           # model cached on body
+    m = measure(body)                              # all measurements (~800 ms)
     m = measure(body, preset="core")               # 4: height, bust, waist, hip
-    m = measure(body, only=["bust_cm", "hip_cm"])  # specific keys
-    m = measure(body, tags={"type": "circumference", "region": "leg"})
+    m = measure(body, only=["bust_cm", "hip_cm"])  # specific keys (fastest)
+    m = measure(body, device="cuda")               # GPU acceleration
+
+**Performance**: Always use ``only=`` or ``preset=`` when you don't need all
+measurements.  The ``AnnyBody`` from ``load_anny_from_params`` caches the Anny
+model — ``measure()`` reuses it (~100 ms per call vs ~500 ms without cache).
+Do NOT use the deprecated ``generate_anny_mesh_from_params()`` or
+``measure_body_from_verts()`` — they create a new model on every call.
 """
 
 from __future__ import annotations

@@ -1,11 +1,18 @@
 """Load Anny body meshes from phenotype params or raw arrays.
 
-All outputs are Z-up, metres, XY-centred, feet at Z = 0 (Anny native /
-Newton native convention).
+All outputs are Z-up, metres, XY-centred, feet at Z = 0.
 
-Sources:
-  * :func:`load_anny_from_params` — generate from phenotype params dict
-  * :func:`load_anny_from_arrays` — create from raw numpy arrays
+Preferred entry point::
+
+    from clad_body.load.anny import load_anny_from_params
+    from clad_body.measure import measure
+
+    body = load_anny_from_params(params)   # model + mesh + bones cached
+    m = measure(body, only=["bust_cm"])    # reuses cached model (~100 ms)
+
+The returned :class:`AnnyBody` carries the Anny model, trimesh, and bone
+data.  ``measure()`` reuses all of it — no redundant model creation or
+forward passes.
 """
 
 from dataclasses import dataclass, field
@@ -22,10 +29,31 @@ class AnnyBody:
 
     Coordinate system: Z-up, metres, XY-centred, feet at Z = 0.
 
-    The ``_model`` attribute holds the Anny rigged model used to generate
-    this body.  When present, measurement code reuses it instead of
-    recreating one (~400 ms saved per call).  Set automatically by
-    :func:`load_anny_from_params`.
+    Properties:
+        mesh:   Cached ``trimesh.Trimesh`` (lazy, built on first access).
+        model:  The Anny rigged model (lazy, created from ``phenotype_params``
+                on first access if not already set).
+
+    The preferred way to create an ``AnnyBody`` is via
+    :func:`load_anny_from_params`, which runs the forward pass and caches
+    the model + bone data on the returned object.  This makes subsequent
+    ``measure()`` calls fast (~100 ms) because they skip model creation
+    (~400 ms) and reuse the cached mesh and bone positions.
+
+    **Model reuse**: The Anny model is **stateless** with respect to body
+    params — phenotype values and local changes are passed as kwargs to
+    ``model.forward()``, not stored as model state.  The model only holds
+    fixed topology (faces, blendshape basis, skinning weights, bone
+    hierarchy).  It is safe to call ``model(phenotype_kwargs=A)`` then
+    ``model(phenotype_kwargs=B)`` on the same model object.  What varies
+    between model instances is which ``local_changes`` labels are enabled
+    (that changes the blendshape basis dimensions).
+
+    **Coordinate gotcha**: ``vertices`` are XY-centred (via
+    ``reposition_apose``), but Anny bone positions from the forward pass
+    are not.  ``_xy_offset`` stores the centering offset so ``measure()``
+    can align joint positions to the mesh.  This is handled automatically —
+    callers don't need to worry about it.
     """
 
     vertices: np.ndarray          # (N, 3) float32
@@ -43,7 +71,7 @@ class AnnyBody:
 
     # Set by load_anny_from_params; used by .model property as cache.
     _model: object = field(default=None, repr=False)
-    # XY offset applied by reposition_apose (for aligning joints to mesh).
+    # XY centering offset (for aligning bone/joint positions to the mesh).
     _xy_offset: Optional[np.ndarray] = field(default=None, repr=False)
 
     def __hash__(self):
@@ -206,18 +234,28 @@ def load_anny_from_params(
 ) -> AnnyBody:
     """Generate Anny body from phenotype params dict.
 
-    Creates an Anny model, builds an A-pose (lowerarm01 X=-45deg), runs the
-    forward pass, and returns an :class:`AnnyBody` in canonical rest-pose.
+    Creates an Anny model, builds an A-pose, runs the forward pass, and
+    returns an :class:`AnnyBody` in canonical rest-pose.  The model and
+    bone data are cached on the returned body so that subsequent
+    ``measure()`` calls skip model creation (~400 ms).
 
     Supports ``_local_changes`` dict in *params* for local shape modifiers.
 
     Args:
         params: Phenotype params dict with keys like ``gender``, ``height``,
-                ``weight``, etc.  All values in [0, 1].
+                ``weight``, etc.  All values in [0, 1].  May include
+                ``_local_changes`` sub-dict for shape blendshapes.
         device: ``"cpu"`` or ``"cuda"``.
 
     Returns:
-        :class:`AnnyBody` in canonical rest-pose (Z-up, m, +Y=front, XY-centred).
+        :class:`AnnyBody` with ``_model`` and ``_xy_offset`` populated.
+
+    Performance:
+        This is the recommended entry point.  The body carries its own
+        model, mesh, and bone data — ``measure(body)`` reuses all of it.
+        If you need to measure many bodies with the **same local_changes
+        labels** but different param values, the model is stateless and can
+        be shared (see :attr:`AnnyBody.model` docstring).
     """
     import anny
     import torch
