@@ -9,9 +9,11 @@ Sources:
 """
 
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Optional
 
 import numpy as np
+import trimesh
 
 
 @dataclass
@@ -19,6 +21,11 @@ class AnnyBody:
     """Loaded Anny body mesh in canonical A-pose convention.
 
     Coordinate system: Z-up, metres, XY-centred, feet at Z = 0.
+
+    The ``_model`` attribute holds the Anny rigged model used to generate
+    this body.  When present, measurement code reuses it instead of
+    recreating one (~400 ms saved per call).  Set automatically by
+    :func:`load_anny_from_params`.
     """
 
     vertices: np.ndarray          # (N, 3) float32
@@ -33,6 +40,40 @@ class AnnyBody:
         "proportions", "cupsize", "firmness",
         "african", "asian", "caucasian",
     ])
+
+    # Set by load_anny_from_params; used by .model property as cache.
+    _model: object = field(default=None, repr=False)
+    # XY offset applied by reposition_apose (for aligning joints to mesh).
+    _xy_offset: Optional[np.ndarray] = field(default=None, repr=False)
+
+    def __hash__(self):
+        return id(self)
+
+    @cached_property
+    def mesh(self) -> trimesh.Trimesh:
+        """Trimesh built from vertices/faces (cached on first access)."""
+        return trimesh.Trimesh(
+            vertices=self.vertices, faces=self.faces, process=False)
+
+    @property
+    def model(self):
+        """Anny rigged model (topology, blendshape basis, bone weights).
+
+        Returned from cache if available (set by :func:`load_anny_from_params`),
+        otherwise created lazily from ``phenotype_params``.  The model is
+        stateless — safe to reuse across forward passes with different params.
+        """
+        if self._model is not None:
+            return self._model
+        if self.phenotype_params is None:
+            raise ValueError(
+                "Cannot create Anny model without phenotype_params. "
+                "Use load_anny_from_params() to create the body."
+            )
+        from clad_body.measure.anny import generate_anny_mesh_from_params
+        _, model = generate_anny_mesh_from_params(self.phenotype_params)
+        self._model = model
+        return model
 
     @property
     def height_m(self) -> float:
@@ -215,17 +256,38 @@ def load_anny_from_params(
             phenotype_kwargs=phenotype_kwargs,
             local_changes_kwargs=local_kwargs,
             pose_parameterization="root_relative_world",
+            return_bone_ends=True,
         )
+
+    # Stash bone data on model for joint extraction in measure()
+    model._last_bone_heads = output.get("bone_heads")
+    model._last_bone_tails = output.get("bone_tails")
 
     verts_np = output["vertices"][0].cpu().numpy().astype(np.float32)
     faces_np = model.faces.cpu().numpy().astype(np.int32)
 
-    # Z-up, feet at Z=0, XY-centred
-    verts_np = reposition_apose(verts_np)
+    # Convert to Z-up before reposition so we can compute the XY offset.
+    # Detect Y-up → Z-up (same logic as _anny_to_trimesh)
+    extents = verts_np.max(0) - verts_np.min(0)
+    height_axis = int(np.argmax(extents))
+    if height_axis == 1:  # Y-up → Z-up
+        verts_np = verts_np[:, [0, 2, 1]].copy()
+        verts_np[:, 2] = -verts_np[:, 2]
+
+    # Compute XY offset BEFORE centering (= what reposition_apose will subtract)
+    verts_np[:, 2] -= verts_np[:, 2].min()  # feet at Z=0
+    center_xy = (verts_np[:, :2].max(0) + verts_np[:, :2].min(0)) / 2
+    xy_offset = -center_xy  # offset to apply to joints
+
+    # XY-centre
+    verts_np[:, 0] -= center_xy[0]
+    verts_np[:, 1] -= center_xy[1]
 
     return AnnyBody(
-        vertices=verts_np,
+        vertices=verts_np.astype(np.float32),
         faces=faces_np,
         source="params",
         phenotype_params=dict(params),  # full copy including _local_changes
+        _model=model,
+        _xy_offset=xy_offset.astype(np.float32),
     )

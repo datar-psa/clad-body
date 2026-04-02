@@ -94,6 +94,7 @@ def measure(
     exclude: list[str] | None = None,
     render_path: str | None = None,
     title: str = "",
+    device: str | None = None,
 ) -> dict:
     """Measure a body model (Anny or MHR).
 
@@ -114,6 +115,7 @@ def measure(
         exclude: Keys to remove from resolved set.
         render_path: If set, save 4-view render PNG.
         title: Title for the render.
+        device: ``"cpu"``, ``"cuda"``, or ``None`` (auto: CUDA if available).
 
     Returns:
         dict with measurement keys (e.g. "bust_cm" → float) plus internal
@@ -132,6 +134,7 @@ def measure(
         from clad_body.measure.anny import _measure_anny
         all_measurements = _measure_anny(
             body, groups=groups, render_path=render_path, title=title,
+            device=device,
         )
     elif isinstance(body, MhrBody):
         from clad_body.measure.mhr import _measure_mhr

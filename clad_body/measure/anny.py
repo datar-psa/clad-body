@@ -768,10 +768,19 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
     return measurements
 
 
-def _measure_anny(body, *, groups, render_path=None, title=""):
+
+def _measure_anny(body, *, groups, render_path=None, title="", device=None):
     """Internal: measure an AnnyBody with selective computation groups.
 
     Called by ``clad_body.measure.measure()``. Do not call directly.
+
+    Uses ``body.mesh`` (cached trimesh) and ``body._model`` (Anny rigged
+    model from :func:`load_anny_from_params`) to avoid redundant model
+    creation and forward passes.  Falls back to creating a model from
+    ``phenotype_params`` if ``body._model`` is not set.
+
+    Args:
+        device: ``"cpu"``, ``"cuda"``, or ``None`` (auto-detect).
     """
     from clad_body.measure import (
         GROUP_A, GROUP_B, GROUP_C, GROUP_D, GROUP_E, GROUP_F, GROUP_G,
@@ -781,12 +790,23 @@ def _measure_anny(body, *, groups, render_path=None, title=""):
             "AnnyBody.phenotype_params is required for measurement. "
             "Use load_anny_from_params() to create the body."
         )
-    verts, model = generate_anny_mesh_from_params(body.phenotype_params)
-    anthro = setup_extended_anthro(model)
-    mesh_tri = _anny_to_trimesh(verts, model)
-    mesh_verts = np.array(mesh_tri.vertices)
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
+
+    # Use body.mesh (cached trimesh from AnnyBody)
+    mesh_tri = body.mesh
+    mesh_verts = body.vertices
     height = mesh_verts[:, 2].max()
 
+    model = body.model
+
+    # (1, V, 3) torch tensor for anthro methods (waist circ, volume, mass).
+    # Distances are coordinate-system invariant so Z-up works fine.
+    verts = torch.from_numpy(body.vertices).unsqueeze(0).float().to(device)
+
+    anthro = setup_extended_anthro(model)
     arm_mask = build_arm_mask(model)
     torso_mesh = build_torso_mesh(mesh_tri, arm_mask)
 
@@ -839,8 +859,17 @@ def _measure_anny(body, *, groups, render_path=None, title=""):
                 belly_depth_cm = (belly_front_y - ub_front_y) * 100
         measurements["belly_depth_cm"] = belly_depth_cm
 
-    # Joints (needed by groups C, D, F, G)
+    # Joints (needed by groups C, D, E, F).
+    # _extract_anny_joints produces Z-up, feet-at-0 joints but does NOT
+    # XY-center them.  body.vertices IS XY-centered (reposition_apose).
+    # Apply the stored XY offset from load_anny_from_params.
     joints = _extract_anny_joints(model)
+    if joints:
+        xy_offset = getattr(body, '_xy_offset', None)
+        if xy_offset is not None and np.any(np.abs(xy_offset) > 1e-6):
+            for name in joints:
+                joints[name] = joints[name].copy()
+                joints[name][:2] += xy_offset
 
     # ── Group B: Limb sweeps ─────────────────────────────────────────────
     if GROUP_B in groups:
