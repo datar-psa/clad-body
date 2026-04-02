@@ -38,6 +38,9 @@ mhr = [
     "mhr>=1.0.0",
     "pymomentum-cpu>=0.1.108",
 ]
+dev = [
+    "pytest>=8.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/datar-psa/clad-body"
