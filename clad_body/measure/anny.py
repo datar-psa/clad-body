@@ -323,12 +323,21 @@ def remap_vertex_indices(model, base_mesh_indices):
 
 
 def setup_extended_anthro(model):
-    """Create Anthropometry instance with all custom vertex loops attached."""
+    """Create Anthropometry instance with all custom vertex loops attached.
+
+    Cached on ``model._extended_anthro`` — the result depends only on model
+    topology (vertex indices, bone hierarchy) which is constant across forward
+    passes with different phenotype params.
+    """
+    cached = getattr(model, "_extended_anthro", None)
+    if cached is not None:
+        return cached
     anthro = anny.Anthropometry(model)
     anthro.hip_vertex_indices = remap_vertex_indices(model, BASE_MESH_HIP_VERTICES)
     anthro.bust_vertex_indices = remap_vertex_indices(model, BASE_MESH_BUST_VERTICES)
     anthro.thigh_vertex_indices = remap_vertex_indices(model, BASE_MESH_THIGH_VERTICES)
     anthro.upperarm_vertex_indices = remap_vertex_indices(model, BASE_MESH_UPPERARM_VERTICES)
+    model._extended_anthro = anthro
     return anthro
 
 
@@ -753,6 +762,7 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
         measurements["estimated_density"] = dens
         measurements["density_corrected_mass_kg"] = density_corrected_mass(
             measurements["mass_kg"], dens, gender_str)
+        measurements["mass_v_rho_kg"] = measurements["volume_m3"] * dens
 
     # Visualization polylines + contours (skip in fast mode)
     if not fast:
@@ -816,7 +826,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
     arm_mask = build_arm_mask(model)
     torso_mesh = build_torso_mesh(mesh_tri, arm_mask)
 
-    measurements = {"height_cm": height * 100}
+    measurements = {"height_cm": float(height * 100)}
 
     # ── Group A: Core torso ──────────────────────────────────────────────
     if GROUP_A in groups:
@@ -899,7 +909,12 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["_upperarm_z"] = upperarm_z
         measurements["_upperarm_pct"] = upperarm_pct
 
-    # ── Group D: Perpendicular (neck, wrist) ─────────────────────────────
+        wrist_cm, wrist_z, wrist_pct = measure_wrist(mesh_tri, height, joints=joints)
+        measurements["wrist_cm"] = wrist_cm
+        measurements["_wrist_z"] = wrist_z
+        measurements["_wrist_pct"] = wrist_pct
+
+    # ── Group D: Perpendicular (neck) ────────────────────────────────────
     if GROUP_D in groups:
         neck_cm, neck_z, neck_pct, neck_pts = measure_neck(
             mesh_tri, height, joints=joints)
@@ -908,11 +923,6 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["_neck_pct"] = neck_pct
         if neck_pts is not None:
             measurements["_neck_contour_pts"] = neck_pts
-
-        wrist_cm, wrist_z, wrist_pct = measure_wrist(mesh_tri, height, joints=joints)
-        measurements["wrist_cm"] = wrist_cm
-        measurements["_wrist_z"] = wrist_z
-        measurements["_wrist_pct"] = wrist_pct
 
     # ── Group E: Mesh geometry (inseam, crotch) ──────────────────────────
     if GROUP_E in groups:
@@ -974,6 +984,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
             measurements["estimated_density"] = dens
             measurements["density_corrected_mass_kg"] = density_corrected_mass(
                 measurements["mass_kg"], dens, gender_str)
+            measurements["mass_v_rho_kg"] = measurements["volume_m3"] * dens
 
     # ── Visualization ────────────────────────────────────────────────────
     # Polylines + contours when we have enough data

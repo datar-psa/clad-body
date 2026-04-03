@@ -32,9 +32,9 @@ from clad_body.measure.registry import (
 # measure() resolves which groups need to run based on requested keys.
 
 GROUP_A = "core_torso"       # height, bust, waist, hip, stomach, underbust, belly_depth
-GROUP_B = "limb_sweeps"      # thigh, knee, calf, upperarm
+GROUP_B = "limb_sweeps"      # thigh, knee, calf, upperarm, wrist
 GROUP_C = "joint_linear"     # shoulder_width, sleeve_length
-GROUP_D = "perpendicular"    # neck, wrist
+GROUP_D = "perpendicular"    # neck
 GROUP_E = "mesh_geometry"    # inseam, crotch_length, front_rise, back_rise
 GROUP_F = "surface_trace"    # shirt_length
 GROUP_G = "body_composition" # volume, mass, bmi, body_fat, estimated_density, density_corrected_mass
@@ -54,7 +54,7 @@ _KEY_TO_GROUP = {
     "shoulder_width_cm": GROUP_C,
     "sleeve_length_cm": GROUP_C,
     "neck_cm": GROUP_D,
-    "wrist_cm": GROUP_D,
+    "wrist_cm": GROUP_B,
     "inseam_cm": GROUP_E,
     "crotch_length_cm": GROUP_E,
     "front_rise_cm": GROUP_E,
@@ -64,6 +64,9 @@ _KEY_TO_GROUP = {
     "mass_kg": GROUP_G,
     "bmi": GROUP_G,
     "body_fat_pct": GROUP_G,
+    "estimated_density": GROUP_G,
+    "density_corrected_mass_kg": GROUP_G,
+    "mass_v_rho_kg": GROUP_G,
 }
 
 # Group dependencies: F needs E (for inseam_z), G needs D (for neck/BF%)

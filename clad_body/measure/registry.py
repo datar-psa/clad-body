@@ -345,6 +345,45 @@ _reg(MeasurementDef(
 ))
 
 _reg(MeasurementDef(
+    key="estimated_density",
+    name="Estimated tissue density",
+    description=(
+        "Estimated whole-body tissue density in kg/m³, derived from body fat "
+        "percentage via the Siri equation."
+    ),
+    iso_ref=None,
+    type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
+    garments=frozenset(), unit="kg/m3",
+    needs_joints=True, anny_only=True,
+))
+
+_reg(MeasurementDef(
+    key="density_corrected_mass_kg",
+    name="Density-corrected mass",
+    description=(
+        "Body mass adjusted for body composition relative to population median "
+        "density. Corrects Anny's fixed 980 kg/m³ for build variation."
+    ),
+    iso_ref=None,
+    type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
+    garments=frozenset(), unit="kg",
+    needs_joints=True, anny_only=True,
+))
+
+_reg(MeasurementDef(
+    key="mass_v_rho_kg",
+    name="Volume-density mass",
+    description=(
+        "Body mass computed as mesh volume times estimated tissue density. "
+        "More accurate than fixed-density mass for predicting real scale weight."
+    ),
+    iso_ref=None,
+    type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
+    garments=frozenset(), unit="kg",
+    needs_joints=True, anny_only=True,
+))
+
+_reg(MeasurementDef(
     key="belly_depth_cm",
     name="Belly depth",
     description=(
