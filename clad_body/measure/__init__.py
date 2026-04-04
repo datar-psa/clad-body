@@ -66,7 +66,6 @@ _KEY_TO_GROUP = {
     "body_fat_pct": GROUP_G,
     "estimated_density": GROUP_G,
     "density_corrected_mass_kg": GROUP_G,
-    "mass_v_rho_kg": GROUP_G,
 }
 
 # Group dependencies: F needs E (for inseam_z), G needs D (for neck/BF%)

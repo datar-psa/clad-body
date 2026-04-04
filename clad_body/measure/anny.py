@@ -742,7 +742,9 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
 
     # Anny-specific body composition
     measurements["volume_m3"] = anthro.volume(verts).item()
-    measurements["mass_kg"] = anthro.mass(verts).item()
+    anny_mass = anthro.mass(verts).item()
+    measurements["_anny_mass_kg"] = anny_mass  # V×980 (internal)
+    measurements["mass_kg"] = anny_mass  # default; overridden by V×ρ below
     measurements["bmi"] = anthro.bmi(verts).item()
 
     # Body fat % and density estimation (requires neck measurement)
@@ -754,15 +756,15 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
             waist_cm=measurements["waist_cm"],
             hip_cm=measurements["hip_cm"],
             neck_cm=neck,
-            mass_kg=measurements["mass_kg"],
+            mass_kg=anny_mass,
             gender=gender_str,
         )
         measurements["body_fat_pct"] = bf_pct
         dens = body_density_from_bf(bf_pct)
         measurements["estimated_density"] = dens
         measurements["density_corrected_mass_kg"] = density_corrected_mass(
-            measurements["mass_kg"], dens, gender_str)
-        measurements["mass_v_rho_kg"] = measurements["volume_m3"] * dens
+            anny_mass, dens, gender_str)
+        measurements["mass_kg"] = measurements["volume_m3"] * dens  # V×ρ
 
     # Visualization polylines + contours (skip in fast mode)
     if not fast:
@@ -965,7 +967,9 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
     # ── Group G: Body composition ────────────────────────────────────────
     if GROUP_G in groups:
         measurements["volume_m3"] = anthro.volume(verts).item()
-        measurements["mass_kg"] = anthro.mass(verts).item()
+        anny_mass = anthro.mass(verts).item()
+        measurements["_anny_mass_kg"] = anny_mass  # V×980 (internal)
+        measurements["mass_kg"] = anny_mass  # default; overridden by V×ρ below
         measurements["bmi"] = anthro.bmi(verts).item()
 
         neck = measurements.get("neck_cm", 0)
@@ -976,15 +980,15 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
                 waist_cm=measurements.get("waist_cm", 0),
                 hip_cm=measurements.get("hip_cm", 0),
                 neck_cm=neck,
-                mass_kg=measurements["mass_kg"],
+                mass_kg=anny_mass,
                 gender=gender_str,
             )
             measurements["body_fat_pct"] = bf_pct
             dens = body_density_from_bf(bf_pct)
             measurements["estimated_density"] = dens
             measurements["density_corrected_mass_kg"] = density_corrected_mass(
-                measurements["mass_kg"], dens, gender_str)
-            measurements["mass_v_rho_kg"] = measurements["volume_m3"] * dens
+                anny_mass, dens, gender_str)
+            measurements["mass_kg"] = measurements["volume_m3"] * dens  # V×ρ
 
     # ── Visualization ────────────────────────────────────────────────────
     # Polylines + contours when we have enough data

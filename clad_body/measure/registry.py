@@ -295,8 +295,10 @@ _reg(MeasurementDef(
     key="mass_kg",
     name="Body mass",
     description=(
-        "Total body mass in kilograms measured on a standing scale. "
-        "ISO 8559-1 §5.6.1."
+        "Total body mass in kilograms. When body fat estimation is available "
+        "(requires neck circumference), uses volume × estimated tissue density "
+        "(V×ρ) for realistic scale weight. Falls back to Anny fixed-density "
+        "mass (V×980) otherwise. ISO 8559-1 §5.6.1."
     ),
     iso_ref="5.6.1",
     type=SCALAR, standard=ISO, region=FULL_BODY, tier=ENHANCED,
@@ -363,19 +365,6 @@ _reg(MeasurementDef(
     description=(
         "Body mass adjusted for body composition relative to population median "
         "density. Corrects Anny's fixed 980 kg/m³ for build variation."
-    ),
-    iso_ref=None,
-    type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
-    garments=frozenset(), unit="kg",
-    needs_joints=True, anny_only=True,
-))
-
-_reg(MeasurementDef(
-    key="mass_v_rho_kg",
-    name="Volume-density mass",
-    description=(
-        "Body mass computed as mesh volume times estimated tissue density. "
-        "More accurate than fixed-density mass for predicting real scale weight."
     ),
     iso_ref=None,
     type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
