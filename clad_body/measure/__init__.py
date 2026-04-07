@@ -38,6 +38,7 @@ GROUP_D = "perpendicular"    # neck
 GROUP_E = "mesh_geometry"    # inseam, crotch_length, front_rise, back_rise
 GROUP_F = "surface_trace"    # shirt_length
 GROUP_G = "body_composition" # volume, mass, bmi, body_fat, estimated_density, density_corrected_mass
+GROUP_H = "back_length"      # back_neck_to_waist (needs joints + waist_z from A)
 
 _KEY_TO_GROUP = {
     "height_cm": GROUP_A,
@@ -60,6 +61,7 @@ _KEY_TO_GROUP = {
     "front_rise_cm": GROUP_E,
     "back_rise_cm": GROUP_E,
     "shirt_length_cm": GROUP_F,
+    "back_neck_to_waist_cm": GROUP_H,
     "volume_m3": GROUP_G,
     "mass_kg": GROUP_G,
     "bmi": GROUP_G,
@@ -72,6 +74,7 @@ _KEY_TO_GROUP = {
 _GROUP_DEPS = {
     GROUP_F: {GROUP_E},
     GROUP_G: {GROUP_D},
+    GROUP_H: {GROUP_A},
 }
 
 

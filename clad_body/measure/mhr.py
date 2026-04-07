@@ -41,6 +41,7 @@ from clad_body.measure._circumferences import (
 )
 from clad_body.measure._lengths import (
     extract_linear_measurement_polylines,
+    measure_back_neck_to_waist,
     measure_crotch_length,
     measure_inseam,
     measure_shirt_length,
@@ -300,7 +301,7 @@ def _measure_mhr(body, *, groups, render_path=None, title=""):
     Called by ``clad_body.measure.measure()``. Do not call directly.
     """
     from clad_body.measure import (
-        GROUP_A, GROUP_B, GROUP_C, GROUP_D, GROUP_E, GROUP_F, GROUP_G,
+        GROUP_A, GROUP_B, GROUP_C, GROUP_D, GROUP_E, GROUP_F, GROUP_G, GROUP_H,
     )
     mesh = body.mesh
     joints = body.joints
@@ -432,10 +433,18 @@ def _measure_mhr(body, *, groups, render_path=None, title=""):
         if shirt_pts is not None:
             measurements["_shirt_length_pts"] = shirt_pts
 
+    # ── Group H: Back neck to waist (ISO 5.4.5) ──────────────────────────
+    if GROUP_H in groups and joints:
+        bnw_cm, bnw_pts = measure_back_neck_to_waist(
+            joints, mesh, measurements.get("_waist_z", 0))
+        measurements["back_neck_to_waist_cm"] = bnw_cm
+        if bnw_pts is not None:
+            measurements["_back_neck_to_waist_pts"] = bnw_pts
+
     # ── Visualization ────────────────────────────────────────────────────
     if joints:
         measurements["_debug_joints"] = {k: np.array(v) for k, v in joints.items()}
-    has_linear = GROUP_C in groups or GROUP_E in groups
+    has_linear = GROUP_C in groups or GROUP_E in groups or GROUP_H in groups
     if has_linear:
         measurements["_linear_polylines"] = extract_linear_measurement_polylines(
             mesh, measurements, joints or {})

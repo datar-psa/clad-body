@@ -225,6 +225,33 @@ class TestMeasureAPISelection:
                     f"{key}: measure() got {got:.2f}, expected {exp:.2f}"
                 )
 
+    def test_back_neck_to_waist(self, anny_body):
+        """ISO 8559-1 §5.4.5: cervicale → waist along back contour.
+
+        Sanity bounds for an average ~171cm body:
+        - Should be > 0 (computed)
+        - Plausible anthropometric range 35–55 cm
+        - Must exceed the straight vertical drop (c7_z − waist_z),
+          since the tape follows the back curvature.
+        """
+        from clad_body.measure import measure
+        m = measure(anny_body, only=["back_neck_to_waist_cm"])
+        bnw = m["back_neck_to_waist_cm"]
+        assert bnw > 0, "back_neck_to_waist_cm should be computed"
+        assert 30.0 < bnw < 60.0, f"unexpected value: {bnw}"
+        # Vertical drop sanity (uses internal _waist_z and joints)
+        m_full = measure(anny_body, only=["back_neck_to_waist_cm"])
+        assert "_back_neck_to_waist_pts" in m_full
+        pts = m_full["_back_neck_to_waist_pts"]
+        vertical_cm = (pts[0, 2] - pts[-1, 2]) * 100
+        assert bnw >= vertical_cm - 1e-6, (
+            f"contour length {bnw:.2f} must be ≥ vertical {vertical_cm:.2f}"
+        )
+        # Contour should not be wildly longer than vertical (sanity ceiling)
+        assert bnw < vertical_cm * 1.4, (
+            f"contour length {bnw:.2f} suspiciously > 1.4× vertical {vertical_cm:.2f}"
+        )
+
     def test_hip_cm_not_hips_cm(self, anny_body):
         """Verify hip_cm is used, not the old hips_cm."""
         from clad_body.measure import measure

@@ -297,8 +297,12 @@ _reg(MeasurementDef(
     description=(
         "Total body mass in kilograms. When body fat estimation is available "
         "(requires neck circumference), uses volume × estimated tissue density "
-        "(V×ρ) for realistic scale weight. Falls back to Anny fixed-density "
-        "mass (V×980) otherwise. ISO 8559-1 §5.6.1."
+        "(V×ρ, Siri two-component, tissue-only convention: 900 fat / 1100 FFM "
+        "kg/m³) for realistic scale weight. Falls back to Anny fixed-density "
+        "mass (V×980) otherwise — note that 980 sits between the two literature "
+        "conventions (whole-body ~985 with lung air, tissue-only ~1030+ without) "
+        "and is empirically calibrated rather than physically derived. "
+        "ISO 8559-1 §5.6.1."
     ),
     iso_ref="5.6.1",
     type=SCALAR, standard=ISO, region=FULL_BODY, tier=ENHANCED,
@@ -370,6 +374,21 @@ _reg(MeasurementDef(
     type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
     garments=frozenset(), unit="kg",
     needs_joints=True, anny_only=True,
+))
+
+_reg(MeasurementDef(
+    key="back_neck_to_waist_cm",
+    name="Back neck point to waist length",
+    description=(
+        "Distance from the back neck point (cervicale, C7 vertebra prominens) "
+        "down the centre back, following the body contour, to the waist level. "
+        "Stand erect; the tape touches the skin and follows the curvature of "
+        "the spine. ISO 8559-1 §5.4.5."
+    ),
+    iso_ref="5.4.5",
+    type=LENGTH, standard=ISO, region=TORSO, tier=ENHANCED,
+    garments=_g(TOPS, DRESSES, OUTERWEAR), unit="cm",
+    needs_joints=True, anny_only=False,
 ))
 
 _reg(MeasurementDef(

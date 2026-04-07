@@ -341,6 +341,84 @@ def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
     return total_cm, pts.astype(np.float32)
 
 
+def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005):
+    """Measure back neck point to waist length — ISO 8559-1 §5.4.5.
+
+    Distance from the cervicale (C7 vertebra prominens, "back neck point")
+    down the centre back, following the body contour, to the waist level.
+    The tape touches the skin and follows the curvature of the upper back
+    and lumbar spine.
+
+    Algorithm: starting from C7 (back-projected to skin), sweep down in Z
+    from c7_z to waist_z. At each Z level, take the most-posterior (max Y)
+    contour point near the midline (X≈0). Sum Euclidean segment lengths.
+
+    Args:
+        joints: dict with 'c7' as a (3,) array (metres, Z-up).
+        mesh: trimesh body mesh (Z-up, metres).
+        waist_z: waist Z height in metres (from waist measurement).
+        step: vertical sampling interval in metres (default 5 mm).
+
+    Returns:
+        (back_neck_to_waist_cm, polyline) where polyline is (N, 3) float32
+        on the back body surface, or (0, None) if inputs are invalid.
+    """
+    c7 = joints.get("c7")
+    if c7 is None or waist_z <= 0:
+        return 0, None
+
+    verts = np.array(mesh.vertices)
+
+    # C7 bone is inside the body — project to nearest back-surface vertex
+    # within a small midline band so we start from a real skin point.
+    c7_z = float(c7[2])
+    if c7_z <= waist_z:
+        return 0, None
+
+    near_c7 = verts[
+        (np.abs(verts[:, 0]) < 0.04)
+        & (np.abs(verts[:, 2] - c7_z) < 0.015)
+    ]
+    if len(near_c7) == 0:
+        return 0, None
+    start = near_c7[np.argmax(near_c7[:, 1])]  # most posterior
+    start_z = float(start[2])
+    start_y = float(start[1])
+
+    slicer = MeshSlicer(mesh)
+    x_band = 0.05  # midline half-width
+
+    z_levels = np.arange(start_z, waist_z - step / 2, -step)
+    if len(z_levels) < 2:
+        return 0, None
+
+    back_ys = [start_y]
+    valid_zs = [start_z]
+    for z in z_levels[1:]:
+        contours = slicer.contours_at_z(z)
+        if not contours:
+            continue
+        midline_pts = []
+        for pts_xy, _, _ in contours:
+            near = pts_xy[np.abs(pts_xy[:, 0]) < x_band]
+            if len(near) > 0:
+                midline_pts.append(near)
+        if not midline_pts:
+            continue
+        midline = np.vstack(midline_pts)
+        back_ys.append(float(midline[:, 1].max()))
+        valid_zs.append(z)
+
+    if len(valid_zs) < 2:
+        return 0, None
+
+    pts = np.column_stack([
+        np.zeros(len(valid_zs)), np.array(back_ys), np.array(valid_zs)
+    ])
+    total_cm = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum() * 100)
+    return total_cm, pts.astype(np.float32)
+
+
 def measure_inseam(mesh, height, step=0.002):
     """Measure inside leg length (crotch to floor) via mesh geometry.
 
@@ -564,5 +642,10 @@ def extract_linear_measurement_polylines(mesh, measurements, joints):
     shirt_pts = measurements.get("_shirt_length_pts")
     if shirt_pts is not None:
         result["shirt_length"] = shirt_pts
+
+    # Back neck point to waist (ISO 8559-1 §5.4.5).
+    bnw_pts = measurements.get("_back_neck_to_waist_pts")
+    if bnw_pts is not None:
+        result["back_neck_to_waist"] = bnw_pts
 
     return result

@@ -46,6 +46,7 @@ from clad_body.measure._circumferences import (
 )
 from clad_body.measure._lengths import (
     extract_linear_measurement_polylines,
+    measure_back_neck_to_waist,
     measure_crotch_length,
     measure_inseam,
     measure_shirt_length,
@@ -151,24 +152,42 @@ def estimate_body_fat_pct(height_cm, waist_cm, hip_cm, neck_cm,
 
 
 def body_density_from_bf(bf_pct):
-    """Whole-body density (kg/m³) from body fat percentage.
+    """Tissue-only body density (kg/m³) from body fat percentage.
 
     Uses the Siri two-component model (1961):
         density = 1 / (BF/d_fat + (1-BF)/d_ffm)
 
     Returns density in kg/m³ (e.g. 1039 for 15% BF).
+
+    Note on conventions: this is *tissue-only* density (the value hydrostatic
+    weighing reports after subtracting residual lung volume), not whole-body
+    density including lung air. Whole-body density averages ~985 kg/m³ (just
+    below water, why humans barely float); tissue-only density is ~1030–1080
+    depending on body composition. Siri's constants 900 (fat) and 1100 (FFM)
+    come from cadaver dissection and are tissue-only. The Anny default
+    980 kg/m³ used elsewhere sits between these two conventions — see
+    questionnaire/findings/feature_impact_and_density.md for the rationale
+    and the open question about which volume convention Anny's mesh follows.
     """
     bf = bf_pct / 100.0
     bf = max(0.03, min(0.60, bf))
-    d_fat = 900.0    # kg/m³
-    d_ffm = 1100.0   # kg/m³
+    d_fat = 900.0    # kg/m³ — Siri (tissue-only, from cadaver studies)
+    d_ffm = 1100.0   # kg/m³ — Siri (tissue-only, from cadaver studies)
     return 1.0 / (bf / d_fat + (1.0 - bf) / d_ffm)
 
 
-# Median tissue density per gender from our sampling distribution (200-sample
-# validation, stable across seeds). Anny's 980 kg/m³ is calibrated so that
-# anny_mass ≈ real_mass for average bodies. These medians let us normalize
-# density relative to the population center.
+# Median tissue-only density per gender from our sampling distribution
+# (200-sample validation, stable across seeds). These match published
+# hydrostatic-weighing values for adults with normal body composition
+# (PubMed 12400035: ~1060 male, ~1042 female for low-BF Japanese cohort).
+#
+# IMPORTANT: these are *tissue-only* densities (lung air subtracted), while
+# Anny's 980 kg/m³ default is closer to *whole-body* density (lung air
+# included). The two conventions differ by ~50 kg/m³. The density correction
+# below assumes Anny's mesh volume is consistent with the tissue-only
+# convention — which is unverified. Empirically the correction works (lean
+# bodies get more mass, soft bodies get less), but the absolute scale rests
+# on the 980 calibration being correct for the "average" subject.
 _MEDIAN_DENSITY = {"male": 1059, "female": 1031}
 
 
@@ -740,6 +759,12 @@ def measure_body_from_verts(verts, model, render_path=None, title="", fast=False
         if shirt_pts is not None:
             measurements["_shirt_length_pts"] = shirt_pts
 
+        bnw_cm, bnw_pts = measure_back_neck_to_waist(
+            joints, mesh_tri, measurements.get("_waist_z", 0))
+        measurements["back_neck_to_waist_cm"] = bnw_cm
+        if bnw_pts is not None:
+            measurements["_back_neck_to_waist_pts"] = bnw_pts
+
     # Anny-specific body composition
     measurements["volume_m3"] = anthro.volume(verts).item()
     anny_mass = anthro.mass(verts).item()
@@ -801,7 +826,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         device: ``"cpu"``, ``"cuda"``, or ``None`` (auto-detect).
     """
     from clad_body.measure import (
-        GROUP_A, GROUP_B, GROUP_C, GROUP_D, GROUP_E, GROUP_F, GROUP_G,
+        GROUP_A, GROUP_B, GROUP_C, GROUP_D, GROUP_E, GROUP_F, GROUP_G, GROUP_H,
     )
     if body.phenotype_params is None:
         raise ValueError(
@@ -964,6 +989,14 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         if shirt_pts is not None:
             measurements["_shirt_length_pts"] = shirt_pts
 
+    # ── Group H: Back neck to waist (ISO 5.4.5) ──────────────────────────
+    if GROUP_H in groups:
+        bnw_cm, bnw_pts = measure_back_neck_to_waist(
+            joints, mesh_tri, measurements.get("_waist_z", 0))
+        measurements["back_neck_to_waist_cm"] = bnw_cm
+        if bnw_pts is not None:
+            measurements["_back_neck_to_waist_pts"] = bnw_pts
+
     # ── Group G: Body composition ────────────────────────────────────────
     if GROUP_G in groups:
         measurements["volume_m3"] = anthro.volume(verts).item()
@@ -992,7 +1025,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
 
     # ── Visualization ────────────────────────────────────────────────────
     # Polylines + contours when we have enough data
-    has_linear = GROUP_C in groups or GROUP_E in groups
+    has_linear = GROUP_C in groups or GROUP_E in groups or GROUP_H in groups
     if has_linear:
         measurements["_linear_polylines"] = extract_linear_measurement_polylines(
             mesh_tri, measurements, joints)
