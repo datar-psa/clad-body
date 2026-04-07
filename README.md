@@ -108,8 +108,8 @@ Every measurement is tagged across 5 dimensions. Each carries a human-readable `
 |---|---|---|
 | `core` | 4 | height, bust, waist, hip |
 | `standard` | 9 | thigh, upperarm, shoulder_width, sleeve_length, inseam |
-| `enhanced` | 17 | neck, underbust, stomach, mass, volume, bmi, body_fat, belly_depth |
-| `fitted`/`all` | 24 | knee, calf, wrist, crotch_length, front_rise, back_rise, shirt_length |
+| `enhanced` | 18 | neck, underbust, stomach, mass, volume, bmi, body_fat, belly_depth, back_neck_to_waist |
+| `fitted`/`all` | 25 | knee, calf, wrist, crotch_length, front_rise, back_rise, shirt_length |
 
 ### Full measurement table
 
@@ -141,6 +141,7 @@ Garment codes: **T**ops, **B**ottoms, **D**resses, **O**uterwear, **U**nderwear.
 | | `front_rise_cm` | Front waist to crotch point, along front body surface. Trouser front panel length. | -- | length | tailor | leg | fit | E | B |
 | | `back_rise_cm` | Back waist to crotch point, along back body surface. Trouser back panel length. | -- | length | tailor | leg | fit | E | B |
 | <img src="assets/contours/shirt_length.png" width="50"> | `shirt_length_cm` | Side neck point down along front body contour to crotch level. Follow chest/stomach curve. | -- | length | tailor | torso | fit | F | T |
+| <img src="assets/contours/back_neck_to_waist.png" width="50"> | `back_neck_to_waist_cm` | Cervicale (C7) down centre back along body contour to waist level. Tape follows spine curvature. | 5.4.5 | length | iso | torso | enh | H | T,D,O |
 
 Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). Anny-only: underbust, mass, volume, bmi, body_fat, belly_depth.
 
@@ -155,6 +156,7 @@ Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). 
 | **E** Mesh geometry | inseam, crotch_length, front_rise, back_rise | Medium | -- |
 | **F** Surface trace | shirt_length | Medium | E |
 | **G** Body composition | volume, mass, bmi, body_fat | Cheap | D |
+| **H** Back length | back_neck_to_waist | Cheap | A |
 
 ## Performance
 
