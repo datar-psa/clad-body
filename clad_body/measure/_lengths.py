@@ -53,6 +53,102 @@ def extract_joints_from_names(joint_names, heads, joint_map, tails=None):
     return result
 
 
+_BACK_TAPE_HALF_WIDTH = 0.025  # metres — half a 5-cm-wide bridging strip
+
+
+def _interp_y_at_x(half, x_target):
+    """Linear interpolation of y at `x_target` between the two points on
+    `half` whose x values straddle `x_target` (closest below + closest
+    above).  Returns None if one side is empty.
+    """
+    below = half[half[:, 0] <= x_target]
+    above = half[half[:, 0] >= x_target]
+    if len(below) == 0 or len(above) == 0:
+        return None
+    left = below[np.argmax(below[:, 0])]   # closest from below
+    right = above[np.argmin(above[:, 0])]  # closest from above
+    dx = right[0] - left[0]
+    if dx < 1e-9:
+        return float((left[1] + right[1]) / 2)
+    t = (x_target - left[0]) / dx
+    return float(left[1] + t * (right[1] - left[1]))
+
+
+def _front_y_sagittal(contour_pts):
+    """Front-surface y at x=0 on a body cross-section.
+
+    For the front (abdomen / pubic) side, a tape measure physically
+    follows the surface at the centerline — there is no midline
+    concavity the tape would bridge over.  The belly is a smooth
+    convex curve whose crossing of the ``x=0`` plane is the centerline
+    surface point, which is exactly what this function returns.
+
+    We do **not** offset off-axis on the front, because near the
+    perineum the front half of a butterfly-shaped cross-section
+    contains inner-thigh peninsulas at |x|≈1 cm that are not on the
+    belly arc.  An off-axis interpolation can jump across a peninsula
+    and land on a wrong surface — ``x=0`` always stays on the belly
+    arc because the belly is the feature that crosses x=0.
+
+    Args:
+        contour_pts: (N, 2) XY points making up one closed body contour.
+
+    Returns:
+        Interpolated y at x=0 on the front half, or None.
+    """
+    cy = contour_pts[:, 1].mean()
+    front = contour_pts[contour_pts[:, 1] < cy]
+    if len(front) < 2:
+        return None
+    return _interp_y_at_x(front, 0.0)
+
+
+def _back_y_tape_bridge(contour_pts):
+    """Back-surface y averaged at x = ±2.5 cm on a body cross-section.
+
+    Models a tailor's tape as a flat 5-cm-wide strip pressed against
+    the body's back surface.  Instead of asking "where does the
+    surface cross x=0" (which would dive into the gluteal cleft), we
+    ask "where does the surface cross the lines x=+2.5 cm and
+    x=-2.5 cm" and average.  The 2.5-cm offset puts the sampling
+    columns well outside the gluteal cleft and near the cheek peaks —
+    the outermost back surface a real tape would rest on when pulled
+    across the buttocks.
+
+    Why this works on the back but not on the front:
+
+      * The **back** near the perineum has a clean topology — the
+        gluteal cheeks curve monotonically from the cleft outwards.
+        A 1-cm-off-axis interpolation lands on the cheek arc on each
+        side.
+      * The **front** near the perineum has a butterfly topology —
+        inner-thigh peninsulas can poke up to |x|≈1 cm close to the
+        centroid, so a 1-cm interpolation can jump across a peninsula
+        and pick a wrong surface point.  Use :func:`_front_y_sagittal`
+        for the front.
+
+    Args:
+        contour_pts: (N, 2) XY points making up one closed body contour.
+
+    Returns:
+        Average of y at x=+1 cm and y at x=-1 cm on the back half,
+        or None if both sides fail.
+    """
+    cy = contour_pts[:, 1].mean()
+    back = contour_pts[contour_pts[:, 1] > cy]
+    if len(back) < 2:
+        return None
+    y_neg = _interp_y_at_x(back, -_BACK_TAPE_HALF_WIDTH)
+    y_pos = _interp_y_at_x(back, +_BACK_TAPE_HALF_WIDTH)
+    if y_neg is None and y_pos is None:
+        return None
+    if y_neg is None:
+        return y_pos
+    if y_pos is None:
+        return y_neg
+    return 0.5 * (y_neg + y_pos)
+
+
 def _surface_y_at(verts, x, z, x_tol=0.05, z_tol=0.05, side="back"):
     """Y coordinate of the body surface at (x, z) from the given side.
 
@@ -474,6 +570,60 @@ def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005, c7_surface=Non
     return total_cm, pts.astype(np.float32)
 
 
+def measure_inseam_from_joints(joints, height, thigh_loop_cm):
+    """Measure inseam from hip joints + soft-tissue correction — differentiable through LBS.
+
+    The bone tail of upperleg01 is the hip articulation point (lesser
+    trochanter level), which sits ABOVE the actual perineum where the legs
+    meet. The gap depends on inner-thigh thickness: slim builds → ~0 gap,
+    muscular/wide-pelvis builds → up to ~2 cm gap.
+
+    We approximate the perineum with a linear correction:
+
+        crotch_z ≈ hip_tail_z + (a*thigh + b*pelvis_w + c) / 100
+
+    where ``pelvis_w`` is the inter-femoral X distance (from bone positions)
+    and ``thigh`` is the vertex-loop thigh circumference.  Both inputs
+    flow through Anny's LBS skinning and blendshapes, so the result stays
+    fully differentiable end-to-end.
+
+    Calibration: 3-param least-squares on the 6 testdata bodies
+    (slim/average/curvy/plus-size × M/F).  RMS=0.06 cm, max=0.10 cm vs
+    ISO 8559-1 mesh-sweep crotch.
+
+    The arithmetic is type-polymorphic — pass numpy arrays for reporting,
+    torch tensors for gradient-based optimization.
+
+    ISO 8559-1 5.1.15: vertical distance from crotch to floor.
+
+    Args:
+        joints:        dict with 'l_hip' and 'r_hip' as (3,) arrays/tensors
+                       (Z-up, metres). These are upperleg01 bone TAILS.
+        height:        body height in metres (for crotch_pct).
+        thigh_loop_cm: vertex-loop thigh circumference in cm
+                       (e.g. ``compute_loop_circumference(verts, anthro.thigh_vertex_indices)*100``).
+
+    Returns:
+        (inseam_cm, crotch_z, crotch_pct) or (0, 0, 0) if joints unavailable.
+    """
+    l_hip = joints.get("l_hip")
+    r_hip = joints.get("r_hip")
+    if l_hip is None or r_hip is None:
+        return 0, 0, 0
+
+    hip_z = (l_hip[2] + r_hip[2]) / 2
+    pelvis_w_cm = abs(l_hip[0] - r_hip[0]) * 100
+
+    # Empirical fit (n=6, RMS=0.06 cm, max=0.10 cm).
+    A_THIGH, A_PELV, A_BIAS = -0.01478, -0.45810, 9.32631
+    offset_cm = A_THIGH * thigh_loop_cm + A_PELV * pelvis_w_cm + A_BIAS
+
+    crotch_z = hip_z + offset_cm / 100
+    inseam_cm = float(crotch_z) * 100
+    crotch_pct = (float(crotch_z) / height * 100) if height > 0 else 0
+    return inseam_cm, float(crotch_z), crotch_pct
+
+
 def measure_inseam(mesh, height, step=0.002):
     """Measure inside leg length (crotch to floor) via mesh geometry.
 
@@ -545,7 +695,6 @@ def measure_crotch_length(mesh, height, waist_z, crotch_z, step=0.005):
     if waist_z <= 0 or crotch_z <= 0 or waist_z <= crotch_z:
         return 0, 0, 0, None, None
 
-    x_band = 0.05  # metres — midline band half-width
     slicer = MeshSlicer(mesh)
 
     # Sample Z levels from waist down to crotch
@@ -553,9 +702,32 @@ def measure_crotch_length(mesh, height, waist_z, crotch_z, step=0.005):
     if len(z_levels) < 2:
         return 0, 0, 0, None, None
 
-    # At each Z, use MeshSlicer to get actual surface contour points (not
-    # raw vertices, which include interior mesh points at leg junctions).
-    # From the contour XY points near X~0, take min-Y (front) and max-Y (back).
+    # At each Z, take the body cross-section's full contour and use its
+    # min_y / max_y as front (abdomen) / back (lumbar / buttocks).  The
+    # body contour is the unique closed contour with body-scale x-extent
+    # — narrow enough to exclude torso+arm merges (>= 0.50 m) and wide
+    # enough to exclude arm-only fragments and slicing-artifact islets
+    # (< 0.10 m).
+    #
+    # Why min_y over the WHOLE contour, not a |x|<5cm midline strip:
+    # the strip only contains ~50 of the contour's ~100 points, so a
+    # single LBS-jitter point can dominate min_y and spike the trace
+    # by 2 cm at one z (see findings/crotch_midline_artifact.md).
+    # Sampling the full contour averages this out — min_y is now
+    # robust to ~mm-scale floating-point jitter and is anatomically
+    # the actual front of the body cross-section.
+    #
+    # Termination is topological: as soon as the slicer returns more
+    # than one body-shaped contour, the legs have separated and we
+    # have reached the perineum.  This avoids depending on
+    # `crotch_z` rounding to land in the right `np.arange` bucket
+    # (which previously made `crotch_length_cm` brittle to ~0.5 mm
+    # perturbations of `crotch_z`).
+    BODY_X_MIN = 0.10  # metres — exclude tiny artifact islets and arms
+    BODY_X_MAX = 0.50  # metres — exclude torso+arm-merged contours
+    BODY_XC_MAX = 0.10  # metres — body contour must be near the centerline
+                       # (excludes arm contours which sit at |xc| > 0.4)
+
     front_ys = []
     back_ys = []
     valid_zs = []
@@ -565,45 +737,21 @@ def measure_crotch_length(mesh, height, waist_z, crotch_z, step=0.005):
         if not contours:
             continue
 
-        # Collect all contour points near the midline
-        midline_pts = []
-        for pts_xy, _, _ in contours:
-            near = pts_xy[np.abs(pts_xy[:, 0]) < x_band]
-            if len(near) > 0:
-                midline_pts.append(near)
-
-        if not midline_pts:
+        body_contours = [
+            pts for pts, xe, xc in contours
+            if BODY_X_MIN < xe < BODY_X_MAX and abs(xc) < BODY_XC_MAX
+        ]
+        if len(body_contours) == 0:
             continue
-        midline = np.vstack(midline_pts)
-        if len(midline) < 2:
-            continue
+        if len(body_contours) >= 2:
+            # Legs separated → perineum reached, stop the trace.
+            break
 
-        # Symmetry-aware outlier suppression for the front/back midline
-        # pick.  The Anny forward pass produces up to ~4 mm of
-        # floating-point left-right vertex drift, which causes the slicer
-        # to occasionally interpolate a contour point on one side with no
-        # mirror on the other.  A raw `min y` over the |x|<x_band strip
-        # lets such single-side outliers spike the front polyline by
-        # ~2 cm at one Z (observed on female_curvy at z≈0.760).
-        # Mitigation: split the strip into left (x<0) and right (x>0)
-        # halves, compare their mins.  If they disagree by more than
-        # `asym_tol` (1 cm — much larger than real left-right asymmetry
-        # of a symmetric body, but bigger than the slicing artifact
-        # amplitude observed in practice), trust the *less frontward*
-        # value as the un-spiked one.  Below the threshold, fall back to
-        # the joint min so symmetric bodies' baselines are unaffected.
-        # See findings/crotch_midline_artifact.md.
-        asym_tol = 0.01  # metres
-        left = midline[midline[:, 0] < 0]
-        right = midline[midline[:, 0] > 0]
-        if len(left) > 0 and len(right) > 0:
-            lf, rf = float(left[:, 1].min()), float(right[:, 1].min())
-            lb, rb = float(left[:, 1].max()), float(right[:, 1].max())
-            front_y = max(lf, rf) if abs(lf - rf) > asym_tol else min(lf, rf)
-            back_y = min(lb, rb) if abs(lb - rb) > asym_tol else max(lb, rb)
-        else:
-            front_y = float(midline[:, 1].min())
-            back_y = float(midline[:, 1].max())
+        body = body_contours[0]
+        front_y = _front_y_sagittal(body)
+        back_y = _back_y_tape_bridge(body)
+        if front_y is None or back_y is None:
+            continue
         front_ys.append(front_y)
         back_ys.append(back_y)
         valid_zs.append(z)

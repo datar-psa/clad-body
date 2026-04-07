@@ -49,6 +49,7 @@ from clad_body.measure._lengths import (
     measure_back_neck_to_waist,
     measure_crotch_length,
     measure_inseam,
+    measure_inseam_from_joints,
     measure_shirt_length,
     measure_shoulder_width,
     measure_sleeve_length,
@@ -83,6 +84,12 @@ ANNY_JOINT_MAP = {
     "r_elbow":   ["lowerarm01.R"],
     "l_wrist":   ["wrist.L"],
     "r_wrist":   ["wrist.R"],
+    # upperleg01 TAIL sits at the perineum / inner-thigh merge level — the
+    # anatomical crotch. The HEAD is the femoral head (ball joint inside the
+    # pelvis, ~8cm above the perineum). Tail matches the mesh-sweep crotch
+    # within ~1–2cm across body types and is differentiable through LBS.
+    "l_hip":     [("upperleg01.L", "tail")],
+    "r_hip":     [("upperleg01.R", "tail")],
 }
 
 # Arm/hand bone indices (shoulder01 through all fingers, both sides).
@@ -642,7 +649,15 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
 
     # ── Group E: Mesh geometry (inseam, crotch) ──────────────────────────
     if GROUP_E in groups:
-        inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
+        if joints.get("l_hip") is not None and joints.get("r_hip") is not None:
+            # Differentiable inseam: hip joint Z + soft-tissue correction
+            # using vertex-loop thigh circumference and inter-femoral width.
+            thigh_loop_cm = compute_loop_circumference(
+                verts, anthro.thigh_vertex_indices).item() * 100
+            inseam_cm, inseam_z, inseam_pct = measure_inseam_from_joints(
+                joints, height, thigh_loop_cm)
+        else:
+            inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
         measurements["inseam_cm"] = inseam_cm
         measurements["_inseam_z"] = inseam_z
         measurements["_inseam_pct"] = inseam_pct
