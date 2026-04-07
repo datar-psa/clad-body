@@ -74,7 +74,6 @@ ANNY_JOINT_MAP = {
     "neck_base": ["neck01"],       # base of neck (~84% height)
     "neck_mid":  ["neck02"],       # neck01 tail = neck02 head (~86%, Adam's apple)
     "head":      ["head"],         # top of neck / base of skull
-    "side_neck": ["shoulder01.L", "shoulder01.R"],  # clavicle tail (~82%)
     # Shoulder bones are inside the body — use the bone TAIL (outer end of
     # upperarm01) for the correct lateral position; acromion is then found
     # via find_acromion() (max Z above the tail).

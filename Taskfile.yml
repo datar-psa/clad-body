@@ -70,8 +70,42 @@ tasks:
         TOKEN="${PUBLISH_TOKEN:-$(gcloud auth print-access-token)}"
         uv publish --publish-url "$URL" --username _token --password "$TOKEN" dist/*
 
+  _release:
+    internal: true
+    desc: "Create a GitHub release for the current version with auto-generated changelog"
+    cmds:
+      - |
+        version=$(cat "{{.TASKFILE_DIR}}/VERSION" | tr -d '[:space:]')
+        tag="{{.PACKAGE}}/v${version}"
+        prev_tag=$(git tag --sort=-version:refname | grep "^{{.PACKAGE}}/v" | grep -v "^${tag}$" | head -1)
+
+        if [ -z "$prev_tag" ]; then
+          range=""
+        else
+          range="${prev_tag}..${tag}"
+        fi
+
+        if [ -z "$range" ]; then
+          commits=$(git log "$tag" --oneline | grep -vE "^[a-f0-9]+ (chore|minor):" | grep -v "initial commit")
+        else
+          commits=$(git log "$range" --oneline | grep -vE "^[a-f0-9]+ (chore|minor):")
+        fi
+
+        feats=$(echo "$commits" | grep "^[a-f0-9]* feat:" | sed 's/^[a-f0-9]* feat: /- /')
+        fixes=$(echo "$commits" | grep "^[a-f0-9]* fix:" | sed 's/^[a-f0-9]* fix: /- /')
+        refactors=$(echo "$commits" | grep "^[a-f0-9]* refactor:" | sed 's/^[a-f0-9]* refactor: /- /')
+
+        notes=""
+        [ -n "$feats" ]     && notes="${notes}### Features\n${feats}\n\n"
+        [ -n "$fixes" ]     && notes="${notes}### Fixes\n${fixes}\n\n"
+        [ -n "$refactors" ] && notes="${notes}### Refactors\n${refactors}\n\n"
+        [ -z "$notes" ]     && notes="Maintenance release."
+
+        gh release create "$tag" --title "$version" --latest --notes "$(printf '%b' "$notes" | sed 's/[[:space:]]*$//')"
+        echo "GitHub release created: $tag"
+
   ship:
-    desc: "check-clean → bump → build → publish. BUMP=patch|minor|major (default: patch)"
+    desc: "check-clean → bump → build → publish → release. BUMP=patch|minor|major (default: patch)"
     vars:
       BUMP: '{{default "patch" .BUMP}}'
     cmds:
@@ -86,3 +120,4 @@ tasks:
         git push origin HEAD "$tag"
         echo ""
         echo "Shipped {{.PACKAGE}}==${version}"
+      - task: _release

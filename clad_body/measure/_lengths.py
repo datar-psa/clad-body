@@ -244,32 +244,65 @@ def measure_sleeve_length(joints, mesh=None, acromion_fn=None):
 measure_arm_length = measure_sleeve_length
 
 
-def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
-    """Measure shirt length — shoulder to crotch along front body contour.
+def find_side_neck_point(slicer, c7_z):
+    """Find the ISO 8559-1 §3.1.7 side neck point (right side).
 
-    SAIA 3DLook "jacket length": distance from Side Neck to crotch level.
-    Blue Eye Custom Tailor #12: from shoulder seam at collar to bottom of fly.
+    Definition: crossing point of the neck base line and the anterior
+    border of the trapezius muscle.
 
-    Algorithm:
-      1. **Start point** — shoulder bone projected to nearest skin vertex.
-         Anny: ``side_neck`` (shoulder01.L head = acromioclavicular joint).
-         MHR: midpoint of C7 and ``l_shoulder``.
-         The hit vertex's X becomes ``trace_x`` for the whole sweep.
-      2. **Front surface sweep** — from 5 cm below start Z to 2 cm above
-         crotch Z (5 mm steps).  At each Z, take most-anterior Y within
-         ±4 cm of ``trace_x``.
-      3. **Convex hull ("not tight to skin")** — lower convex hull of the
-         (Z, Y) profile via Andrew's monotone chain.  Bridges concavities,
-         follows convex curvature back toward the body after peaks.
-      4. **Single path** — same polyline for measurement and visualisation.
-         Measurement = sum of Euclidean segment lengths.  Polyline offset
-         0.5 mm in front of skin for rendering.
+    Implementation: horizontal slice at ``c7_z`` (the neck base line)
+    → rightmost contour point (maximum X > 0).  At this height the body
+    cross-section is the upper-trapezius + neck mass; its lateral max-X
+    sits exactly where the trapezius surface starts to slope down toward
+    the acromion — the anterior trapezius border at the neck base line.
 
     Args:
-        joints: dict with 'c7' and optionally 'side_neck' / 'l_shoulder'.
+        slicer: MeshSlicer pre-built on the body mesh (Z-up, metres).
+        c7_z: C7 vertebra Z height in metres (neck base line).
+
+    Returns:
+        (3,) numpy array [X, Y, Z] in metres, or None if slice unavailable.
+    """
+    contours = slicer.contours_at_z(float(c7_z))
+    if not contours:
+        return None
+    all_pts = np.vstack([pts for pts, _, _ in contours])
+    right = all_pts[all_pts[:, 0] > 0]
+    if len(right) == 0:
+        return None
+    lat = right[np.argmax(right[:, 0])]
+    return np.array([float(lat[0]), float(lat[1]), float(c7_z)], dtype=np.float64)
+
+
+def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
+    """Measure shirt length — side neck to crotch along front body contour.
+
+    3DLook "jacket length": distance from Side Neck Point to the thigh
+    centre at crotch level (ISO 8559-1 §3.1.7 + 3DLook definition).
+
+    Algorithm:
+      1. **Side neck point** — lateral max-X of the horizontal body
+         contour at C7 height (``find_side_neck_point``).  This is the
+         crossing point of the neck base line and the anterior border of
+         the trapezius, per ISO 8559-1 §3.1.7.
+      2. **Skip zone** — the 5 cm of Z immediately below the side neck
+         are skipped.  The shoulder-cap topology transitions abruptly in
+         this zone, producing spurious front-surface samples.  The lower
+         convex hull bridges cleanly from the start to the first stable
+         chest-level sample.
+      3. **Front surface sweep** — from (c7_z − 5 cm) to 2 cm above
+         crotch Z.  At each Z, take most-anterior Y within ±2.5 cm of
+         ``side_neck_x``.
+      4. **Lower convex hull ("not tight to skin")** — bridges
+         concavities (waist dip), follows convex protrusions (bust, belly).
+      5. **Single polyline** — measurement = sum of Euclidean segment
+         lengths; polyline offset 0.5 mm anterior of skin for rendering.
+
+    Args:
+        joints: dict with 'c7' as (3,) array (metres, Z-up).
         mesh: trimesh of the full body (Z-up, metres).
         crotch_z: Z coordinate of crotch (from measure_inseam), in metres.
-        measurements: dict from the measurement pipeline (for shoulder arc).
+        measurements: unused (kept for API compatibility).
         step: vertical step between sample planes (metres, default 5 mm).
 
     Returns:
@@ -280,64 +313,38 @@ def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
     if c7 is None or crotch_z <= 0:
         return 0, None
 
-    verts = np.array(mesh.vertices)
-    if measurements is None:
-        measurements = {}
-
-    # ── Shoulder bone → nearest skin vertex = start point ──
-    # Anny: side_neck (acromioclavicular joint).
-    # MHR: midpoint of C7 and l_shoulder (collar-shoulder junction).
-    # Fallback: neck radius X at C7 - 3% height.
     slicer = MeshSlicer(mesh)
-    side_neck_x = 0.055  # default neck radius
-    c7_contours = slicer.contours_at_z(float(c7[2]))
-    if c7_contours:
-        all_pts = np.vstack([pts for pts, _, _ in c7_contours])
-        neck_pts = all_pts[(all_pts[:, 0] > 0) & (all_pts[:, 0] < 0.08)]
-        if len(neck_pts) > 0:
-            side_neck_x = float(neck_pts[:, 0].max())
+    c7_z = float(c7[2])
 
-    shoulder_bone = joints.get("side_neck")
-    if shoulder_bone is None:
-        l_sh = joints.get("l_shoulder")
-        if l_sh is not None:
-            shoulder_bone = (c7 + l_sh) / 2
-    if shoulder_bone is not None:
-        bone_x = float(shoulder_bone[0])
-        bone_y = float(shoulder_bone[1])
-        bone_z = float(shoulder_bone[2])
-    else:
-        bone_x = side_neck_x
-        bone_y = float(c7[1])
-        bone_z = float(c7[2]) - 0.03 * verts[:, 2].max()
-
-    # Project to nearest skin vertex
-    bone_pos = np.array([bone_x, bone_y, bone_z])
-    hit = verts[np.argmin(np.linalg.norm(verts - bone_pos, axis=1))]
-    snz = float(hit[2])
-    trace_x = float(hit[0])
-    start_y = float(hit[1])
+    # ── Side neck point (ISO 8559-1 §3.1.7) ──
+    side_neck = find_side_neck_point(slicer, c7_z)
+    if side_neck is None:
+        return 0, None
+    snx = float(side_neck[0])
+    sny = float(side_neck[1])
+    snz = float(side_neck[2])
 
     if snz <= crotch_z:
         return 0, None
 
-    # ── Front surface sweep (5 cm below shoulder → 2 cm above crotch) ──
-    # Start point is prepended; hull bridges from shoulder to first bust contact.
-    x_band = 0.04
-    sweep_top = snz - 0.05
+    # ── Front surface sweep ──
+    # Skip 5 cm below side neck: shoulder-cap topology changes abruptly
+    # there.  The lower convex hull bridges this gap with a single clean
+    # diagonal from the trap top to the first stable chest-level sample.
+    x_band = 0.025
+    skip_zone = 0.05
     sweep_bottom = crotch_z + 0.02
-    z_levels = np.arange(sweep_top, sweep_bottom - step / 2, -step)
 
-    front_ys = [start_y]
+    front_ys = [sny]
     valid_zs = [snz]
 
-    for z in z_levels:
+    for z in np.arange(snz - skip_zone - step, sweep_bottom - step / 2, -step):
         contours = slicer.contours_at_z(z)
         if not contours:
             continue
         nearby_pts = []
         for pts_xy, _, _ in contours:
-            near = pts_xy[np.abs(pts_xy[:, 0] - trace_x) < x_band]
+            near = pts_xy[np.abs(pts_xy[:, 0] - snx) < x_band]
             if len(near) > 0:
                 nearby_pts.append(near)
         if not nearby_pts:
@@ -350,11 +357,8 @@ def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
         return 0, None
 
     # ── Lower convex hull — "not tight to skin" ──
-    # Tape touches convex protrusions (chest, belly) and bridges
-    # concavities (dip between them).  After a peak the tape follows the
-    # outgoing convex curvature back toward the body.
     n = len(valid_zs)
-    z_arr = np.array(valid_zs)   # Z descending (top → bottom)
+    z_arr = np.array(valid_zs)
     y_arr = np.array(front_ys)
 
     # Andrew's monotone chain (lower hull), Z-ascending pass.
@@ -379,7 +383,7 @@ def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
     tape_ys = np.minimum(tape_ys, y_arr) - 0.005
 
     # ── Single polyline for measurement + visualisation ──
-    pts = np.column_stack([np.full(n, trace_x), tape_ys, z_arr])
+    pts = np.column_stack([np.full(n, snx), tape_ys, z_arr])
     total_cm = float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum() * 100)
 
     return total_cm, pts.astype(np.float32)
