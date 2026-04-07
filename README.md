@@ -5,9 +5,9 @@ Body loaders and ISO 8559-1 measurements for [Anny](https://github.com/naver/ann
 Neither Anny nor MHR ship with a measurement library. You get a mesh with 14-18K vertices and no standard way to extract waist circumference from it. This package fills that gap.
 
 <p align="center">
-  <img src="assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
+  <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
   <br>
-  <img src="assets/4view_male_average.png" alt="Anny body — male average, 4-view with ISO 8559-1 circumference measurements" width="700">
+  <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/4view_male_average.png" alt="Anny body — male average, 4-view with ISO 8559-1 circumference measurements" width="700">
 </p>
 
 ## What it does
@@ -117,31 +117,31 @@ Garment codes: **T**ops, **B**ottoms, **D**resses, **O**uterwear, **U**nderwear.
 
 | | Key | Description | ISO | Type | Std | Region | Tier | Grp | Gar |
 |---|---|---|---|---|---|---|---|---|---|
-| <img src="assets/contours/bust.png" width="50"> | `height_cm` | Vertical distance from floor to top of head. Stand erect, feet together. | 5.1.1 | scalar | iso | full_body | core | A | all |
-| <img src="assets/contours/bust.png" width="50"> | `bust_cm` | Horizontal circumference at the fullest part of the chest/bust. Tape under armpits, across bust prominence, level and snug. | 5.3.4 | circ | iso | torso | core | A | T,D,O,U |
-| <img src="assets/contours/waist.png" width="50"> | `waist_cm` | Horizontal circumference at natural waist, midway between lowest rib and hip bone. Tape at navel height, parallel to floor. | 5.3.10 | circ | iso | torso | core | A | all |
-| <img src="assets/contours/hip.png" width="50"> | `hip_cm` | Horizontal circumference at greatest buttock prominence. Feet together, tape around widest part of hips. | 5.3.13 | circ | iso | abdomen | core | A | B,D,O,U |
-| <img src="assets/contours/thigh.png" width="50"> | `thigh_cm` | Horizontal circumference at fullest part of upper thigh, just below gluteal fold. Stand with legs slightly apart. | 5.3.20 | circ | iso | leg | std | B | B |
-| <img src="assets/contours/upperarm.png" width="50"> | `upperarm_cm` | Circumference at fullest part of upper arm, midway between shoulder and elbow. Arm relaxed, not flexed. | 5.3.16 | circ | iso | arm | std | B | T,O |
-| <img src="assets/contours/shoulder_width.png" width="50"> | `shoulder_width_cm` | Distance between left and right shoulder points (acromion), measured across back over C7 vertebra. | 5.4.2 | length | iso | torso | std | C | T,D,O |
-| <img src="assets/contours/sleeve_length.png" width="50"> | `sleeve_length_cm` | Distance from shoulder point along outside of slightly bent arm, over elbow, to wrist bone. | 5.7.8 | length | iso | arm | std | C | T,O |
-| <img src="assets/contours/inseam.png" width="50"> | `inseam_cm` | Distance from crotch point straight down to floor. Stand erect, feet slightly apart. | 5.1.15 | length | iso | leg | std | E | B |
-| <img src="assets/contours/neck.png" width="50"> | `neck_cm` | Circumference just below Adam's apple, perpendicular to neck axis. Comfortably snug. | 5.3.2 | circ | iso | neck | enh | D | T |
-| <img src="assets/contours/underbust.png" width="50"> | `underbust_cm` | Horizontal circumference directly below breast tissue, at inframammary crease. Bra band size. | 5.3.6 | circ | iso | torso | enh | A | T,D,U |
-| <img src="assets/contours/stomach.png" width="50"> | `stomach_cm` | Horizontal circumference at maximum anterior protrusion of abdomen, usually at/below navel. | -- | circ | tailor | abdomen | enh | A | T,B |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/bust.png) | `height_cm` | Vertical distance from floor to top of head. Stand erect, feet together. | 5.1.1 | scalar | iso | full_body | core | A | all |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/bust.png) | `bust_cm` | Horizontal circumference at the fullest part of the chest/bust. Tape under armpits, across bust prominence, level and snug. | 5.3.4 | circ | iso | torso | core | A | T,D,O,U |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/waist.png) | `waist_cm` | Horizontal circumference at natural waist, midway between lowest rib and hip bone. Tape at navel height, parallel to floor. | 5.3.10 | circ | iso | torso | core | A | all |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/hip.png) | `hip_cm` | Horizontal circumference at greatest buttock prominence. Feet together, tape around widest part of hips. | 5.3.13 | circ | iso | abdomen | core | A | B,D,O,U |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/thigh.png) | `thigh_cm` | Horizontal circumference at fullest part of upper thigh, just below gluteal fold. Stand with legs slightly apart. | 5.3.20 | circ | iso | leg | std | B | B |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/upperarm.png) | `upperarm_cm` | Circumference at fullest part of upper arm, midway between shoulder and elbow. Arm relaxed, not flexed. | 5.3.16 | circ | iso | arm | std | B | T,O |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/shoulder_width.png) | `shoulder_width_cm` | Distance between left and right shoulder points (acromion), measured across back over C7 vertebra. | 5.4.2 | length | iso | torso | std | C | T,D,O |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/sleeve_length.png) | `sleeve_length_cm` | Distance from shoulder point along outside of slightly bent arm, over elbow, to wrist bone. | 5.7.8 | length | iso | arm | std | C | T,O |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/inseam.png) | `inseam_cm` | Distance from crotch point straight down to floor. Stand erect, feet slightly apart. | 5.1.15 | length | iso | leg | std | E | B |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/neck.png) | `neck_cm` | Circumference just below Adam's apple, perpendicular to neck axis. Comfortably snug. | 5.3.2 | circ | iso | neck | enh | D | T |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/underbust.png) | `underbust_cm` | Horizontal circumference directly below breast tissue, at inframammary crease. Bra band size. | 5.3.6 | circ | iso | torso | enh | A | T,D,U |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/stomach.png) | `stomach_cm` | Horizontal circumference at maximum anterior protrusion of abdomen, usually at/below navel. | -- | circ | tailor | abdomen | enh | A | T,B |
 | | `mass_kg` | Total body mass in kilograms. | 5.6.1 | scalar | iso | full_body | enh | G | -- |
 | | `volume_m3` | Total body volume in cubic metres, from mesh geometry. | -- | scalar | derived | full_body | enh | G | -- |
 | | `bmi` | Body mass index: mass (kg) / height (m)^2. | -- | scalar | derived | full_body | enh | G | -- |
 | | `body_fat_pct` | Estimated body fat % via Navy/Weltman equations from circumferences. | -- | scalar | derived | full_body | enh | G | -- |
 | | `belly_depth_cm` | How much belly protrudes forward vs underbust/ribcage. Negative = belly prominence. | -- | scalar | derived | abdomen | enh | A | T,B |
-| <img src="assets/contours/knee.png" width="50"> | `knee_cm` | Horizontal circumference at centre of kneecap. Bend knee slightly (~45 degrees). | 5.3.22 | circ | iso | leg | fit | B | B |
-| <img src="assets/contours/calf.png" width="50"> | `calf_cm` | Maximum horizontal circumference of the calf. Stand with legs slightly apart. | 5.3.24 | circ | iso | leg | fit | B | B |
-| <img src="assets/contours/wrist.png" width="50"> | `wrist_cm` | Circumference at wrist, at prominent bone on little finger side (ulnar styloid). | 5.3.19 | circ | iso | arm | fit | D | T |
-| <img src="assets/contours/crotch.png" width="50"> | `crotch_length_cm` | Distance from front waist centre, through crotch, to back waist centre. Follow body surface. | 5.4.18 | length | iso | leg | fit | E | B |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/knee.png) | `knee_cm` | Horizontal circumference at centre of kneecap. Bend knee slightly (~45 degrees). | 5.3.22 | circ | iso | leg | fit | B | B |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/calf.png) | `calf_cm` | Maximum horizontal circumference of the calf. Stand with legs slightly apart. | 5.3.24 | circ | iso | leg | fit | B | B |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/wrist.png) | `wrist_cm` | Circumference at wrist, at prominent bone on little finger side (ulnar styloid). | 5.3.19 | circ | iso | arm | fit | D | T |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/crotch.png) | `crotch_length_cm` | Distance from front waist centre, through crotch, to back waist centre. Follow body surface. | 5.4.18 | length | iso | leg | fit | E | B |
 | | `front_rise_cm` | Front waist to crotch point, along front body surface. Trouser front panel length. | -- | length | tailor | leg | fit | E | B |
 | | `back_rise_cm` | Back waist to crotch point, along back body surface. Trouser back panel length. | -- | length | tailor | leg | fit | E | B |
-| <img src="assets/contours/shirt_length.png" width="50"> | `shirt_length_cm` | Side neck point down along front body contour to crotch level. Follow chest/stomach curve. | -- | length | tailor | torso | fit | F | T |
-| <img src="assets/contours/back_neck_to_waist.png" width="50"> | `back_neck_to_waist_cm` | Cervicale (C7) down centre back along body contour to waist level. Tape follows spine curvature. | 5.4.5 | length | iso | torso | enh | H | T,D,O |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/shirt_length.png) | `shirt_length_cm` | Side neck point down along front body contour to crotch level. Follow chest/stomach curve. | -- | length | tailor | torso | fit | F | T |
+| ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/back_neck_to_waist.png) | `back_neck_to_waist_cm` | Cervicale (C7) down centre back along body contour to waist level. Tape follows spine curvature. | 5.4.5 | length | iso | torso | enh | H | T,D,O |
 
 Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). Anny-only: underbust, mass, volume, bmi, body_fat, belly_depth.
 

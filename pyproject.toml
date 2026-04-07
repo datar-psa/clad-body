@@ -58,4 +58,4 @@ pattern = "(?P<version>.+)"
 packages = ["clad_body"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["findings/", "tests/results/", "dist/", "*.egg-info/"]
+exclude = ["findings/", "tests/results/", "dist/", "*.egg-info/", "assets/"]
