@@ -16,7 +16,9 @@ m = measure(body)                       # all keys: ~800 ms
 m = measure(body, device="cuda")        # GPU acceleration
 ```
 
-**Do NOT use** `generate_anny_mesh_from_params()`, `measure_body_from_verts()`, or `measure_body()` — these are deprecated. They create a new Anny model (~400 ms) on every call instead of reusing the one cached on `AnnyBody`.
+For optimisation hot loops where you already have a model and a fresh forward-pass vertex tensor and don't want to pay for `load_anny_from_params()` re-creating the model, use `load_anny_from_verts(verts, model, phenotype_kwargs=..., bone_heads=..., bone_tails=...)` which wraps the existing model + verts into an `AnnyBody` ready for `measure()`.
+
+The legacy entry points `generate_anny_mesh_from_params()`, `measure_body_from_verts()`, and `measure_body()` were **removed in 0.3.0** — they created a new Anny model (~400 ms) on every call.
 
 ## Performance rules
 

@@ -1,6 +1,6 @@
 """Regression tests for Anny body measurements.
 
-Each test loads a subject from testdata/anny/, runs measure_body(), and asserts
+Each test loads a subject from testdata/anny/, runs measure(), and asserts
 that every measurement stays within TOLERANCE of the expected reference value.
 
 Subjects come from the mhr_to_anny pipeline (real photo reconstructions):
@@ -21,7 +21,9 @@ import os
 
 import pytest
 
-from clad_body.measure.anny import measure_body, load_phenotype_params
+from clad_body.load.anny import load_anny_from_params
+from clad_body.measure import measure
+from clad_body.measure.anny import load_phenotype_params
 from tests.conftest import RESULTS_DIR
 
 TESTDATA_DIR = os.path.join(
@@ -64,7 +66,8 @@ def _run_measure(name, render=False):
         os.makedirs(out_dir, exist_ok=True)
         render_path = os.path.join(out_dir, f"{name}_4view.png")
 
-    measured = measure_body(params, render_path=render_path, title=name)
+    body = load_anny_from_params(params)
+    measured = measure(body, render_path=render_path, title=name)
 
     errors = {}
     for key in CIRC_KEYS:
@@ -250,6 +253,22 @@ class TestMeasureAPISelection:
         # Contour should not be wildly longer than vertical (sanity ceiling)
         assert bnw < vertical_cm * 1.4, (
             f"contour length {bnw:.2f} suspiciously > 1.4× vertical {vertical_cm:.2f}"
+        )
+
+    def test_only_mass_kg_matches_full(self, anny_body):
+        """`measure(body, only=['mass_kg'])` must equal full-measure mass.
+
+        Regression test for the GROUP_G dependency bug: the body fat formula
+        in GROUP_G reads waist_cm and hip_cm from GROUP_A.  Without A in the
+        dep set, those default to 0, BF% early-returns 3%, density is wrong,
+        and mass_kg is off by 5+ kg.  GROUP_G must declare A as a dependency.
+        """
+        from clad_body.measure import measure
+        m_full = measure(anny_body)
+        m_only = measure(anny_body, only=["mass_kg"])
+        assert abs(m_only["mass_kg"] - m_full["mass_kg"]) < 0.01, (
+            f"only=mass_kg gave {m_only['mass_kg']:.3f}, "
+            f"full gave {m_full['mass_kg']:.3f}"
         )
 
     def test_hip_cm_not_hips_cm(self, anny_body):

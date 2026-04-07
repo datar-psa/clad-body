@@ -14,8 +14,6 @@ Public API::
 **Performance**: Always use ``only=`` or ``preset=`` when you don't need all
 measurements.  The ``AnnyBody`` from ``load_anny_from_params`` caches the Anny
 model — ``measure()`` reuses it (~100 ms per call vs ~500 ms without cache).
-Do NOT use the deprecated ``generate_anny_mesh_from_params()`` or
-``measure_body_from_verts()`` — they create a new model on every call.
 """
 
 from __future__ import annotations
@@ -70,10 +68,15 @@ _KEY_TO_GROUP = {
     "density_corrected_mass_kg": GROUP_G,
 }
 
-# Group dependencies: F needs E (for inseam_z), G needs D (for neck/BF%)
+# Group dependencies:
+#   F needs E (uses inseam_z to find shirt-length endpoint)
+#   G needs D (BF% formula uses neck) AND A (BF% formula uses waist + hip).
+#     Without A, waist/hip default to 0 → BF% formula early-returns 3% →
+#     wrong density → mass_kg off by 5+ kg.  See test_only_mass_kg_matches_full.
+#   H needs A (back_neck_to_waist surface trace endpoint is _waist_z)
 _GROUP_DEPS = {
     GROUP_F: {GROUP_E},
-    GROUP_G: {GROUP_D},
+    GROUP_G: {GROUP_A, GROUP_D},
     GROUP_H: {GROUP_A},
 }
 

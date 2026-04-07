@@ -98,10 +98,10 @@ class AnnyBody:
                 "Cannot create Anny model without phenotype_params. "
                 "Use load_anny_from_params() to create the body."
             )
-        from clad_body.measure.anny import generate_anny_mesh_from_params
-        _, model = generate_anny_mesh_from_params(self.phenotype_params)
-        self._model = model
-        return model
+        # Re-create model from params via load_anny_from_params (which caches
+        # the model on the returned body) and steal it.
+        self._model = load_anny_from_params(self.phenotype_params)._model
+        return self._model
 
     @property
     def height_m(self) -> float:
@@ -209,6 +209,76 @@ def build_anny_apose(model, device, arm_angle_deg=-45.0, leg_angle_deg=0.0):
     return pose
 
 
+def load_anny_from_verts(
+    verts_torch,
+    model,
+    *,
+    phenotype_kwargs: Optional[dict] = None,
+    bone_heads=None,
+    bone_tails=None,
+    source: str = "from_verts",
+) -> "AnnyBody":
+    """Wrap a forward-pass output `(verts, model)` into an :class:`AnnyBody`.
+
+    Use this when you already have an Anny model and a fresh `model(...)`
+    forward pass and just want a body to feed to ``measure()`` — typically
+    inside an optimisation loop where re-running ``load_anny_from_params``
+    (which creates a fresh model every call, ~400 ms) would dominate.
+
+    Applies the canonical transform (Y-up → Z-up, feet at Z=0, XY-centred)
+    and stashes the centering offset on the body so :func:`measure` aligns
+    joints to the mesh.
+
+    Args:
+        verts_torch: ``(1, V, 3)`` torch tensor — output of
+            ``model(...)['vertices']``.
+        model: the Anny model used for the forward pass.  Reused as-is
+            (cached on the returned body).
+        phenotype_kwargs: optional kwargs from the same forward pass — if
+            given, they're stashed on the model so ``measure()``'s gender
+            inference can read them.  May be omitted (gender will fall
+            back to a mesh heuristic).
+        bone_heads, bone_tails: outputs of ``model(..., return_bone_ends=True)``.
+            If provided, stashed on the model so joint extraction works
+            inside ``measure()``.
+        source: provenance label.
+
+    Returns:
+        :class:`AnnyBody` ready for :func:`clad_body.measure.measure`.
+    """
+    verts_np = verts_torch[0].detach().cpu().numpy().astype(np.float32)
+    extents = verts_np.max(0) - verts_np.min(0)
+    if int(np.argmax(extents)) == 1:  # Y-up → Z-up
+        verts_np = verts_np[:, [0, 2, 1]].copy()
+        verts_np[:, 2] = -verts_np[:, 2]
+    verts_np[:, 2] -= verts_np[:, 2].min()
+    center_xy = (verts_np[:, :2].max(0) + verts_np[:, :2].min(0)) / 2
+    verts_np[:, 0] -= center_xy[0]
+    verts_np[:, 1] -= center_xy[1]
+
+    faces_np = (
+        model.faces.detach().cpu().numpy()
+        if hasattr(model.faces, "detach")
+        else np.asarray(model.faces)
+    ).astype(np.int32)
+
+    if phenotype_kwargs is not None:
+        model._last_phenotype_kwargs = phenotype_kwargs
+    if bone_heads is not None:
+        model._last_bone_heads = bone_heads
+    if bone_tails is not None:
+        model._last_bone_tails = bone_tails
+
+    return AnnyBody(
+        vertices=verts_np,
+        faces=faces_np,
+        source=source,
+        phenotype_params={},  # non-None placeholder; measure() requires this
+        _model=model,
+        _xy_offset=(-center_xy).astype(np.float32),
+    )
+
+
 def load_anny_from_arrays(
     vertices: np.ndarray,
     faces: np.ndarray,
@@ -297,9 +367,12 @@ def load_anny_from_params(
             return_bone_ends=True,
         )
 
-    # Stash bone data on model for joint extraction in measure()
+    # Stash bone data + phenotype kwargs on model for joint extraction and
+    # gender inference in measure(). _infer_gender reads _last_phenotype_kwargs
+    # to pick male/female body fat formulas.
     model._last_bone_heads = output.get("bone_heads")
     model._last_bone_tails = output.get("bone_tails")
+    model._last_phenotype_kwargs = phenotype_kwargs
 
     verts_np = output["vertices"][0].cpu().numpy().astype(np.float32)
     faces_np = model.faces.cpu().numpy().astype(np.int32)

@@ -25,7 +25,6 @@ import trimesh
 
 try:
     import anny
-    import roma
     import torch
 except ImportError as _e:
     raise ImportError(
@@ -384,7 +383,7 @@ def _extract_anny_joints(model):
     """Extract canonical joint positions from Anny model after forward pass.
 
     Uses bone_heads from the last forward pass (stashed on model by
-    generate_anny_mesh_from_params). Falls back to template_bone_heads
+    load_anny_from_params / load_anny_from_verts). Falls back to template_bone_heads
     if no forward pass output is available.
 
     For shoulder joints (l_shoulder, r_shoulder), uses bone TAILS (end of
@@ -503,313 +502,6 @@ def load_phenotype_params(params_path: str) -> dict:
     """Load phenotype params from JSON file."""
     with open(params_path) as f:
         return json.load(f)
-
-
-def generate_anny_mesh_from_params(params_dict: dict, device="cpu") -> tuple[torch.Tensor, object]:
-    """Generate Anny mesh in A-pose from phenotype parameters.
-
-    .. deprecated::
-        Prefer :func:`clad_body.load.anny.load_anny_from_params` which
-        returns an :class:`AnnyBody` with cached model, mesh, and bone
-        data — ready for ``measure()`` without redundant work.
-
-    This function creates a **new** Anny model (~400 ms) on every call.
-    Use ``load_anny_from_params`` to avoid this cost.
-
-    Returns:
-        vertices: (1, V, 3) torch tensor (Y-up, Anny native)
-        model: Anny model instance (with ``_last_bone_heads/tails`` stashed)
-    """
-    device = torch.device(device)
-
-    # Extract local changes if present
-    local_changes = params_dict.get("_local_changes", {})
-    local_change_labels = list(local_changes.keys()) if local_changes else False
-
-    # Create Anny model
-    model = anny.create_fullbody_model(
-        all_phenotypes=True, triangulate_faces=True,
-        local_changes=local_change_labels,
-    )
-    model = model.to(dtype=torch.float32, device=device)
-
-    # Build phenotype kwargs
-    phenotype_kwargs = {}
-    for label in model.phenotype_labels:
-        if label in params_dict:
-            phenotype_kwargs[label] = torch.tensor(
-                [params_dict[label]], dtype=torch.float32, device=device
-            )
-
-    # Build local changes kwargs
-    local_kwargs = {}
-    for label, value in local_changes.items():
-        local_kwargs[label] = torch.tensor([value], dtype=torch.float32, device=device)
-
-    # Generate A-pose mesh
-    n_joints = model.bone_count
-    a_pose = torch.eye(4, device=device, dtype=torch.float32)
-    a_pose = a_pose.unsqueeze(0).unsqueeze(0).expand(1, n_joints, 4, 4).clone()
-
-    # A-pose: lowerarm01.L [52] and lowerarm01.R [78] rotated X=-45°
-    angle = math.radians(-45)
-    rotvec_arm = torch.tensor([angle, 0, 0], device=device, dtype=torch.float32)
-    a_pose[0, 52, :3, :3] = roma.rotvec_to_rotmat(rotvec_arm)
-    a_pose[0, 78, :3, :3] = roma.rotvec_to_rotmat(rotvec_arm)
-
-    # Forward pass — request bone ends for joint-based measurements
-    with torch.no_grad():
-        output = model(
-            pose_parameters=a_pose,
-            phenotype_kwargs=phenotype_kwargs,
-            local_changes_kwargs=local_kwargs,
-            pose_parameterization='root_relative_world',
-            return_bone_ends=True,
-        )
-
-    # Stash bone heads and tails on model for downstream joint extraction
-    model._last_bone_heads = output.get("bone_heads")
-    model._last_bone_tails = output.get("bone_tails")
-    model._last_phenotype_kwargs = phenotype_kwargs
-
-    return output["vertices"], model
-
-
-def measure_body_from_verts(verts, model, render_path=None, title="", fast=False):
-    """Measure an Anny body from pre-generated vertices.
-
-    .. deprecated::
-        Use ``clad_body.measure.measure(body, preset=...)`` instead.
-
-    Same measurements as measure_body() but skips mesh generation — use when you
-    already have vertices (e.g. after scaling or during optimization).
-
-    When ``fast=True``, skips expensive operations not needed for bulk dataset
-    generation: acromion search (shoulder_width_cm, sleeve_length_cm), linear
-    polylines, and contour extraction.  Circumference measurements, belly depth,
-    and body composition are still computed.
-
-    All circumference measurements use plane sweep (ISO 8559-1):
-    - Bust: torso-only mesh plane sweep (arm faces excluded via skinning weights)
-    - Waist: Anny built-in vertex loop (anatomically defined by model)
-    - Hips: full mesh plane sweep with 0.60m x_extent filter
-    - Thigh: full mesh plane sweep, 2 separate leg contours at 30-37% height
-    - Upper arm: full mesh plane sweep, arm contours at 72-80% height
-
-    Args:
-        verts: (1, V, 3) torch tensor — Anny mesh vertices
-        model: Anny model instance (for faces, vertex loops, skinning weights)
-        render_path: if set, save 4-view render with measurement contours
-        title: title for the 4-view render
-
-    Returns:
-        dict with measurements in cm/kg and internal metadata (_mesh_tri, etc.)
-    """
-    anthro = setup_extended_anthro(model)
-    mesh_tri = _anny_to_trimesh(verts, model)
-    mesh_verts = np.array(mesh_tri.vertices)
-    height = mesh_verts[:, 2].max()
-
-    # Build torso-only mesh (exclude arm/hand faces via skinning weights)
-    arm_mask = build_arm_mask(model)
-    torso_mesh = build_torso_mesh(mesh_tri, arm_mask)
-
-    # Waist from Anny built-in vertex loop
-    waist_cm = anthro.waist_circumference(verts).item() * 100
-    waist_z = float(mesh_verts[anthro.waist_vertex_indices, 2].mean())
-
-    # Anchor bust at breast bone prominence (ISO 8559-1 §5.3.4: "across the bust
-    # prominence"), hip around vertex loop Z.
-    bust_anchor_z = _breast_prominence_z(model, mesh_verts)
-    hip_anchor_z = float(mesh_verts[anthro.hip_vertex_indices, 2].mean())
-
-    # Bust (torso-only mesh) and hips (full mesh) via plane sweep
-    bust_cm, bust_z, hip_cm, hip_z = torso_sweep_bust_hips(
-        mesh_tri, torso_mesh, waist_z, height,
-        bust_anchor_z=bust_anchor_z, hip_anchor_z=hip_anchor_z)
-
-
-    measurements = {"height_cm": height * 100}
-
-    # Hip
-    measurements["hip_cm"] = hip_cm
-    measurements["_hip_z"] = hip_z
-    measurements["_hip_pct"] = (hip_z / height * 100) if hip_z > 0 else 0
-
-    # Bust
-    measurements["bust_cm"] = bust_cm
-    measurements["_bust_z"] = bust_z
-    measurements["_bust_pct"] = (bust_z / height * 100) if bust_z > 0 else 0
-
-    # Waist from Anny vertex loop
-    measurements["waist_cm"] = waist_cm
-    measurements["_waist_z"] = waist_z
-    measurements["_waist_pct"] = waist_z / height * 100
-
-    # Stomach: max torso circ between waist and hips (belly prominence)
-    stomach_cm, stomach_z, stomach_pct, belly_front_y = measure_stomach(
-        torso_mesh, waist_z, hip_anchor_z, height)
-    measurements["stomach_cm"] = stomach_cm
-    measurements["_stomach_z"] = stomach_z
-    measurements["_stomach_pct"] = stomach_pct
-    measurements["_belly_front_y"] = belly_front_y
-
-    # Joint positions (needed for neck perpendicular slicing + linear measurements)
-    joints = _extract_anny_joints(model)
-
-    # Limb measurements (expensive plane sweeps — skip in fast mode)
-    if not fast:
-        thigh_cm, thigh_z, thigh_pct = measure_thigh(mesh_tri, height)
-        measurements["thigh_cm"] = thigh_cm
-        measurements["_thigh_z"] = thigh_z
-        measurements["_thigh_pct"] = thigh_pct
-
-        knee_cm, knee_z, knee_pct = measure_knee(mesh_tri, height)
-        measurements["knee_cm"] = knee_cm
-        measurements["_knee_z"] = knee_z
-        measurements["_knee_pct"] = knee_pct
-
-        calf_cm, calf_z, calf_pct = measure_calf(mesh_tri, height)
-        measurements["calf_cm"] = calf_cm
-        measurements["_calf_z"] = calf_z
-        measurements["_calf_pct"] = calf_pct
-
-        upperarm_cm, upperarm_z, upperarm_pct = measure_upperarm(mesh_tri, height)
-        measurements["upperarm_cm"] = upperarm_cm
-        measurements["_upperarm_z"] = upperarm_z
-        measurements["_upperarm_pct"] = upperarm_pct
-
-        # Inseam via mesh geometry (crotch detection)
-        inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
-        measurements["inseam_cm"] = inseam_cm
-        measurements["_inseam_z"] = inseam_z
-        measurements["_inseam_pct"] = inseam_pct
-
-        # Crotch length (total rise) via surface tracing
-        crotch_len, front_rise, back_rise, crotch_f_pts, crotch_b_pts = \
-            measure_crotch_length(
-                mesh_tri, height,
-                measurements.get("_waist_z", 0), inseam_z)
-        measurements["crotch_length_cm"] = crotch_len
-        measurements["front_rise_cm"] = front_rise
-        measurements["back_rise_cm"] = back_rise
-        if crotch_f_pts is not None:
-            measurements["_crotch_front_pts"] = crotch_f_pts
-        if crotch_b_pts is not None:
-            measurements["_crotch_back_pts"] = crotch_b_pts
-
-    # Neck circumference (single plane sweep — always computed, needed for BF% estimation)
-    neck_cm, neck_z, neck_pct, neck_pts = measure_neck(
-        mesh_tri, height, joints=joints)
-    measurements["neck_cm"] = neck_cm
-    measurements["_neck_z"] = neck_z
-    measurements["_neck_pct"] = neck_pct
-    if neck_pts is not None:
-        measurements["_neck_contour_pts"] = neck_pts
-
-    # Wrist circumference (perpendicular to forearm axis — skip in fast mode)
-    if not fast:
-        wrist_cm, wrist_z, wrist_pct = measure_wrist(mesh_tri, height, joints=joints)
-        measurements["wrist_cm"] = wrist_cm
-        measurements["_wrist_z"] = wrist_z
-        measurements["_wrist_pct"] = wrist_pct
-
-    # Underbust (ISO 8559-1 §5.7.8 — inframammary fold):
-    # Bottom of the breast region from skinning weights (weight > 0.3) marks
-    # the inframammary fold. Measure torso circumference at that Z directly.
-    fold_z = breast_floor_z(model, mesh_verts)
-    if fold_z is not None and fold_z > 0:
-        underbust_z = fold_z
-        underbust_cm = torso_circumference_at_z(
-            torso_mesh, underbust_z, max_x_extent=MAX_TORSO_X_EXTENT,
-            combine_fragments=True) * 100
-    else:
-        underbust_z, underbust_cm = 0.0, 0.0
-    measurements["underbust_cm"] = underbust_cm
-    measurements["_underbust_z"] = underbust_z
-    measurements["_underbust_pct"] = (underbust_z / height * 100) if underbust_z > 0 else 0
-
-    # Belly depth: how much the belly protrudes forward vs the underbust/ribcage.
-    # Compares most-anterior Y at belly level (from measure_stomach) vs underbust
-    # level.  Negative = belly sticks out more than ribcage = belly prominence.
-    # Uses underbust as reference because it's above the belly blendshape zone
-    # (51-69% height), unlike waist (61%) which is inside it.
-    belly_depth_cm = 0.0
-    if belly_front_y is not None and underbust_z > 0:
-        ub_front_y = _front_y_at_z(torso_mesh, underbust_z)
-        if ub_front_y is not None:
-            belly_depth_cm = (belly_front_y - ub_front_y) * 100
-    measurements["belly_depth_cm"] = belly_depth_cm
-
-    # Acromion-based measurements (expensive — skip in fast mode)
-    if not fast:
-        sw_cm, sw_arc = measure_shoulder_width(
-            joints, mesh=mesh_tri, acromion_fn=find_acromion)
-        measurements["shoulder_width_cm"] = sw_cm
-        if sw_arc is not None:
-            measurements["_shoulder_arc_pts"] = sw_arc
-        measurements["sleeve_length_cm"] = measure_sleeve_length(
-            joints, mesh=mesh_tri, acromion_fn=find_acromion)
-
-        # Shirt length: side neck → crotch along front body contour
-        shirt_cm, shirt_pts = measure_shirt_length(
-            joints, mesh_tri, measurements.get("_inseam_z", 0),
-            measurements=measurements)
-        measurements["shirt_length_cm"] = shirt_cm
-        if shirt_pts is not None:
-            measurements["_shirt_length_pts"] = shirt_pts
-
-        bnw_cm, bnw_pts = measure_back_neck_to_waist(
-            joints, mesh_tri, measurements.get("_waist_z", 0))
-        measurements["back_neck_to_waist_cm"] = bnw_cm
-        if bnw_pts is not None:
-            measurements["_back_neck_to_waist_pts"] = bnw_pts
-
-    # Anny-specific body composition
-    measurements["volume_m3"] = anthro.volume(verts).item()
-    anny_mass = anthro.mass(verts).item()
-    measurements["_anny_mass_kg"] = anny_mass  # V×980 (internal)
-    measurements["mass_kg"] = anny_mass  # default; overridden by V×ρ below
-    measurements["bmi"] = anthro.bmi(verts).item()
-
-    # Body fat % and density estimation (requires neck measurement)
-    neck = measurements.get("neck_cm", 0)
-    if neck > 0:
-        gender_str = _infer_gender(model, verts)
-        bf_pct = estimate_body_fat_pct(
-            height_cm=measurements["height_cm"],
-            waist_cm=measurements["waist_cm"],
-            hip_cm=measurements["hip_cm"],
-            neck_cm=neck,
-            mass_kg=anny_mass,
-            gender=gender_str,
-        )
-        measurements["body_fat_pct"] = bf_pct
-        dens = body_density_from_bf(bf_pct)
-        measurements["estimated_density"] = dens
-        measurements["density_corrected_mass_kg"] = density_corrected_mass(
-            anny_mass, dens, gender_str)
-        measurements["mass_kg"] = measurements["volume_m3"] * dens  # V×ρ
-
-    # Visualization polylines + contours (skip in fast mode)
-    if not fast:
-        measurements["_linear_polylines"] = extract_linear_measurement_polylines(
-            mesh_tri, measurements, joints)
-        measurements["mesh"] = mesh_tri
-        measurements["contours"] = extract_measurement_contours(
-            mesh_tri, measurements, torso_mesh=torso_mesh)
-
-    # Internal metadata (kept for backward compat)
-    measurements["_mesh_tri"] = mesh_tri
-    measurements["_torso_mesh"] = torso_mesh
-    measurements["_anthro"] = anthro
-
-    if render_path:
-        render_4view(mesh_tri, measurements, render_path,
-                     title=title, model_label="Anny", torso_mesh=torso_mesh)
-
-    return measurements
-
 
 
 def _measure_anny(body, *, groups, render_path=None, title="", device=None):
@@ -1044,29 +736,6 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
     return measurements
 
 
-def measure_body(params_dict: dict, render_path=None, title="") -> dict:
-    """Extract body measurements from phenotype parameters.
-
-    .. deprecated::
-        Use ``clad_body.measure.measure(body)`` instead::
-
-            from clad_body.load import load_anny_from_params
-            from clad_body.measure import measure
-            body = load_anny_from_params(params)
-            m = measure(body, render_path="out.png")
-
-    Args:
-        params_dict: Anny phenotype parameters (from load_phenotype_params)
-        render_path: if set, save 4-view render with measurement contours
-        title: title for the 4-view render
-
-    Returns:
-        Dictionary with measurements in cm and kg
-    """
-    verts, model = generate_anny_mesh_from_params(params_dict)
-    return measure_body_from_verts(verts, model, render_path=render_path, title=title)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Measure Anny body mesh from phenotype parameters"
@@ -1122,7 +791,10 @@ def main():
 
     # Measure (+ optional 4-view render)
     print(f"\nGenerating mesh and measuring (plane sweep, 2mm steps)...")
-    measurements = measure_body(params_dict, render_path=render_path, title=source_name)
+    from clad_body.load.anny import load_anny_from_params
+    from clad_body.measure import measure
+    body = load_anny_from_params(params_dict)
+    measurements = measure(body, render_path=render_path, title=source_name)
 
     # Load target measurements (explicit or auto-detected)
     target_path = args.target

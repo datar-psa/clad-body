@@ -523,8 +523,34 @@ def measure_crotch_length(mesh, height, waist_z, crotch_z, step=0.005):
         if len(midline) < 2:
             continue
 
-        front_ys.append(float(midline[:, 1].min()))
-        back_ys.append(float(midline[:, 1].max()))
+        # Symmetry-aware outlier suppression for the front/back midline
+        # pick.  The Anny forward pass produces up to ~4 mm of
+        # floating-point left-right vertex drift, which causes the slicer
+        # to occasionally interpolate a contour point on one side with no
+        # mirror on the other.  A raw `min y` over the |x|<x_band strip
+        # lets such single-side outliers spike the front polyline by
+        # ~2 cm at one Z (observed on female_curvy at z≈0.760).
+        # Mitigation: split the strip into left (x<0) and right (x>0)
+        # halves, compare their mins.  If they disagree by more than
+        # `asym_tol` (1 cm — much larger than real left-right asymmetry
+        # of a symmetric body, but bigger than the slicing artifact
+        # amplitude observed in practice), trust the *less frontward*
+        # value as the un-spiked one.  Below the threshold, fall back to
+        # the joint min so symmetric bodies' baselines are unaffected.
+        # See findings/crotch_midline_artifact.md.
+        asym_tol = 0.01  # metres
+        left = midline[midline[:, 0] < 0]
+        right = midline[midline[:, 0] > 0]
+        if len(left) > 0 and len(right) > 0:
+            lf, rf = float(left[:, 1].min()), float(right[:, 1].min())
+            lb, rb = float(left[:, 1].max()), float(right[:, 1].max())
+            front_y = max(lf, rf) if abs(lf - rf) > asym_tol else min(lf, rf)
+            back_y = min(lb, rb) if abs(lb - rb) > asym_tol else max(lb, rb)
+        else:
+            front_y = float(midline[:, 1].min())
+            back_y = float(midline[:, 1].max())
+        front_ys.append(front_y)
+        back_ys.append(back_y)
         valid_zs.append(z)
 
     if len(valid_zs) < 2:
