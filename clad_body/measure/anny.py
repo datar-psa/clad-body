@@ -44,6 +44,7 @@ from clad_body.measure._circumferences import (
     torso_sweep_bust_hips,
 )
 from clad_body.measure._lengths import (
+    c7_surface_point,
     extract_linear_measurement_polylines,
     measure_back_neck_to_waist,
     measure_crotch_length,
@@ -66,17 +67,23 @@ from clad_body.measure._render import (
 # lateral (X) position for the shoulder/arm junction. The actual acromion
 # (bony shoulder tip) is found by find_acromion() (max Z above bone tail).
 ANNY_JOINT_MAP = {
-    "c7": ["neck01"],
-    "neck_base": ["neck01"],      # base of neck (C7 level, ~85% height)
-    "neck_mid": ["neck02"],       # neck01 tail = neck02 head (~86% height, Adam's apple)
-    "head": ["head"],             # top of neck / base of skull
-    "side_neck": ["shoulder01.L", "shoulder01.R"],  # shoulder01 head = clavicle tail (~82% height)
-    "l_shoulder": ["upperarm01.L"],
-    "r_shoulder": ["upperarm01.R"],
-    "l_elbow": ["lowerarm01.L"],
-    "r_elbow": ["lowerarm01.R"],
-    "l_wrist": ["wrist.L"],
-    "r_wrist": ["wrist.R"],
+    # neck01.head (~83.7% height) is the T1 joint — too low for C7.
+    # The midpoint of neck01 lands at ~84.6%, matching the anatomical
+    # C7 spinous process (84–85% of stature).
+    "c7":        [("neck01", "midpoint")],
+    "neck_base": ["neck01"],       # base of neck (~84% height)
+    "neck_mid":  ["neck02"],       # neck01 tail = neck02 head (~86%, Adam's apple)
+    "head":      ["head"],         # top of neck / base of skull
+    "side_neck": ["shoulder01.L", "shoulder01.R"],  # clavicle tail (~82%)
+    # Shoulder bones are inside the body — use the bone TAIL (outer end of
+    # upperarm01) for the correct lateral position; acromion is then found
+    # via find_acromion() (max Z above the tail).
+    "l_shoulder": [("upperarm01.L", "tail")],
+    "r_shoulder": [("upperarm01.R", "tail")],
+    "l_elbow":   ["lowerarm01.L"],
+    "r_elbow":   ["lowerarm01.R"],
+    "l_wrist":   ["wrist.L"],
+    "r_wrist":   ["wrist.R"],
 }
 
 # Arm/hand bone indices (shoulder01 through all fingers, both sides).
@@ -432,16 +439,7 @@ def _extract_anny_joints(model):
     if not bone_labels:
         return {}
 
-    joints = extract_joints_from_names(bone_labels, heads_np, ANNY_JOINT_MAP)
-
-    # Override shoulder joints with bone tails (end of upperarm01)
-    if tails_np is not None:
-        tail_joints = extract_joints_from_names(bone_labels, tails_np, ANNY_JOINT_MAP)
-        for key in ("l_shoulder", "r_shoulder"):
-            if key in tail_joints:
-                joints[key] = tail_joints[key]
-
-    return joints
+    return extract_joints_from_names(bone_labels, heads_np, ANNY_JOINT_MAP, tails=tails_np)
 
 
 def _anny_to_trimesh(verts_tensor, model):
@@ -664,6 +662,10 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
 
     # ── Group C: Joint linear (shoulder, sleeve) ─────────────────────────
     if GROUP_C in groups:
+        c7 = joints.get("c7")
+        if c7 is not None:
+            measurements["_c7_surface_pt"] = c7_surface_point(
+                np.array(mesh_tri.vertices), c7)
         sw_cm, sw_arc = measure_shoulder_width(
             joints, mesh=mesh_tri, acromion_fn=find_acromion)
         measurements["shoulder_width_cm"] = sw_cm
@@ -684,7 +686,8 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
     # ── Group H: Back neck to waist (ISO 5.4.5) ──────────────────────────
     if GROUP_H in groups:
         bnw_cm, bnw_pts = measure_back_neck_to_waist(
-            joints, mesh_tri, measurements.get("_waist_z", 0))
+            joints, mesh_tri, measurements.get("_waist_z", 0),
+            c7_surface=measurements.get("_c7_surface_pt"))
         measurements["back_neck_to_waist_cm"] = bnw_cm
         if bnw_pts is not None:
             measurements["_back_neck_to_waist_pts"] = bnw_pts

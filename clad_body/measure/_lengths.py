@@ -10,13 +10,22 @@ import numpy as np
 from ._slicer import MeshSlicer
 
 
-def extract_joints_from_names(joint_names, joint_positions, joint_map):
+def extract_joints_from_names(joint_names, heads, joint_map, tails=None):
     """Map model-specific joint names to canonical joint positions.
+
+    Each map entry is ``canonical_name -> [candidate, ...]`` where each
+    candidate is either:
+      - a plain string  → bone head position (default)
+      - ``(name, "head")``     → bone head position (explicit)
+      - ``(name, "tail")``     → bone tail position (requires tails)
+      - ``(name, "midpoint")`` → average of head and tail (requires tails)
 
     Args:
         joint_names: list of joint name strings from the body model.
-        joint_positions: (N, 3) array of joint positions (metres, Z-up).
-        joint_map: dict mapping canonical name -> list of candidate model names.
+        heads: (N, 3) array of bone head positions (Z-up, metres).
+        joint_map: dict mapping canonical name -> list of candidates (see above).
+        tails: optional (N, 3) array of bone tail positions; required for
+            "tail" and "midpoint" candidates.
 
     Returns:
         dict mapping canonical name -> (3,) numpy array, or empty dict on failure.
@@ -25,9 +34,22 @@ def extract_joints_from_names(joint_names, joint_positions, joint_map):
     result = {}
     for canon_name, candidates in joint_map.items():
         for cand in candidates:
-            if cand in name_to_idx:
-                result[canon_name] = joint_positions[name_to_idx[cand]]
-                break
+            if isinstance(cand, str):
+                bone, mode = cand, "head"
+            else:
+                bone, mode = cand
+            if bone not in name_to_idx:
+                continue
+            i = name_to_idx[bone]
+            if mode == "head":
+                result[canon_name] = heads[i]
+            elif mode == "tail" and tails is not None:
+                result[canon_name] = tails[i]
+            elif mode == "midpoint" and tails is not None:
+                result[canon_name] = 0.5 * (heads[i] + tails[i])
+            else:
+                continue  # tails unavailable for tail/midpoint — try next candidate
+            break
     return result
 
 
@@ -52,6 +74,31 @@ def _surface_y_at(verts, x, z, x_tol=0.05, z_tol=0.05, side="back"):
     if len(near) == 0:
         return None
     return float(near[:, 1].max() if side == "back" else near[:, 1].min())
+
+
+def c7_surface_point(verts, c7):
+    """Project the C7 bone position onto the posterior (back) skin surface.
+
+    C7 bone sits inside the body. This finds the nearest back-surface point
+    at the same X and Z, using progressively wider search bands. Returns a
+    (3,) point on the skin, or None if the surface cannot be found.
+
+    This is the canonical projection used by both the shoulder-width arc and
+    back-neck-to-waist, so both measurements share the exact same start point.
+
+    Args:
+        verts: (V, 3) mesh vertices (Z-up, metres)
+        c7: (3,) C7 bone position (Z-up, metres)
+
+    Returns:
+        (3,) surface point (Z-up, metres) or None.
+    """
+    for x_tol, z_tol in [(0.03, 0.01), (0.04, 0.03), (0.06, 0.06)]:
+        y = _surface_y_at(verts, float(c7[0]), float(c7[2]),
+                          x_tol=x_tol, z_tol=z_tol, side="back")
+        if y is not None:
+            return np.array([float(c7[0]), y, float(c7[2])], dtype=np.float64)
+    return None
 
 
 def _shoulder_arc_polyline(verts, l_acromion, r_acromion, c7, n_samples=30):
@@ -86,14 +133,11 @@ def _shoulder_arc_polyline(verts, l_acromion, r_acromion, c7, n_samples=30):
     # Acromion points (first & last) are already on the skin surface — use
     # their actual Y so the arc starts/ends exactly at the landmark dots.
     # Only C7 (middle waypoint) needs surface projection because the bone
-    # position is inside the body.
+    # position is inside the body. Use c7_surface_point so the arc and
+    # back-neck-to-waist share the identical start landmark.
     wp_y = [float(r_acromion[1]), None, float(l_acromion[1])]
-    c7_y = _surface_y_at(verts, c7[0], c7[2], x_tol=0.03, z_tol=0.01, side="back")
-    if c7_y is None:
-        c7_y = _surface_y_at(verts, c7[0], c7[2], x_tol=0.04, z_tol=0.03, side="back")
-    if c7_y is None:
-        c7_y = _surface_y_at(verts, c7[0], c7[2], x_tol=0.06, z_tol=0.06, side="back")
-    wp_y[1] = c7_y if c7_y is not None else float(c7[1])
+    c7_surf = c7_surface_point(verts, c7)
+    wp_y[1] = float(c7_surf[1]) if c7_surf is not None else float(c7[1])
 
     cs_y = CubicSpline(dists, wp_y, bc_type='natural')
 
@@ -341,7 +385,7 @@ def measure_shirt_length(joints, mesh, crotch_z, measurements=None, step=0.005):
     return total_cm, pts.astype(np.float32)
 
 
-def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005):
+def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005, c7_surface=None):
     """Measure back neck point to waist length — ISO 8559-1 §5.4.5.
 
     Distance from the cervicale (C7 vertebra prominens, "back neck point")
@@ -358,6 +402,10 @@ def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005):
         mesh: trimesh body mesh (Z-up, metres).
         waist_z: waist Z height in metres (from waist measurement).
         step: vertical sampling interval in metres (default 5 mm).
+        c7_surface: optional (3,) pre-computed C7 skin-surface point returned
+            by measure_shoulder_width. When provided, skips the internal
+            surface projection so the back-neck-to-waist line starts at the
+            exact same landmark as the shoulder-width arc midpoint.
 
     Returns:
         (back_neck_to_waist_cm, polyline) where polyline is (N, 3) float32
@@ -368,22 +416,25 @@ def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005):
         return 0, None
 
     verts = np.array(mesh.vertices)
-
-    # C7 bone is inside the body — project to nearest back-surface vertex
-    # within a small midline band so we start from a real skin point.
     c7_z = float(c7[2])
     if c7_z <= waist_z:
         return 0, None
 
-    near_c7 = verts[
-        (np.abs(verts[:, 0]) < 0.04)
-        & (np.abs(verts[:, 2] - c7_z) < 0.015)
-    ]
-    if len(near_c7) == 0:
-        return 0, None
-    start = near_c7[np.argmax(near_c7[:, 1])]  # most posterior
-    start_z = float(start[2])
-    start_y = float(start[1])
+    if c7_surface is not None:
+        # Caller already projected c7 to the skin (from measure_shoulder_width).
+        start_z = float(c7_surface[2])
+        start_y = float(c7_surface[1])
+    else:
+        # Fallback: project C7 bone to nearest posterior midline vertex.
+        near_c7 = verts[
+            (np.abs(verts[:, 0]) < 0.04)
+            & (np.abs(verts[:, 2] - c7_z) < 0.015)
+        ]
+        if len(near_c7) == 0:
+            return 0, None
+        start = near_c7[np.argmax(near_c7[:, 1])]  # most posterior
+        start_z = float(start[2])
+        start_y = float(start[1])
 
     slicer = MeshSlicer(mesh)
     x_band = 0.05  # midline half-width

@@ -40,6 +40,7 @@ from clad_body.measure._circumferences import (
     measure_wrist,
 )
 from clad_body.measure._lengths import (
+    c7_surface_point,
     extract_linear_measurement_polylines,
     measure_back_neck_to_waist,
     measure_crotch_length,
@@ -263,6 +264,10 @@ def measure_mhr(mesh_or_body, render_path=None, title=""):
 
     # Joint-based linear measurements (shoulder width, arm length)
     if joints:
+        c7 = joints.get("c7")
+        if c7 is not None:
+            measurements["_c7_surface_pt"] = c7_surface_point(
+                np.array(mesh.vertices), c7)
         sw_cm, sw_arc = measure_shoulder_width(
             joints, mesh=mesh, acromion_fn=find_acromion)
         measurements["shoulder_width_cm"] = sw_cm
@@ -416,6 +421,10 @@ def _measure_mhr(body, *, groups, render_path=None, title=""):
 
     # ── Group C: Joint linear (shoulder, sleeve) ─────────────────────────
     if GROUP_C in groups and joints:
+        c7 = joints.get("c7")
+        if c7 is not None:
+            measurements["_c7_surface_pt"] = c7_surface_point(
+                np.array(mesh.vertices), c7)
         sw_cm, sw_arc = measure_shoulder_width(
             joints, mesh=mesh, acromion_fn=find_acromion)
         measurements["shoulder_width_cm"] = sw_cm
@@ -436,7 +445,8 @@ def _measure_mhr(body, *, groups, render_path=None, title=""):
     # ── Group H: Back neck to waist (ISO 5.4.5) ──────────────────────────
     if GROUP_H in groups and joints:
         bnw_cm, bnw_pts = measure_back_neck_to_waist(
-            joints, mesh, measurements.get("_waist_z", 0))
+            joints, mesh, measurements.get("_waist_z", 0),
+            c7_surface=measurements.get("_c7_surface_pt"))
         measurements["back_neck_to_waist_cm"] = bnw_cm
         if bnw_pts is not None:
             measurements["_back_neck_to_waist_pts"] = bnw_pts
