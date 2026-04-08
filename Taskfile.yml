@@ -33,7 +33,7 @@ tasks:
 
         echo "$new" > "{{.TASKFILE_DIR}}/VERSION"
         git add "{{.TASKFILE_DIR}}/VERSION"
-        git commit -m "chore: bump {{.PACKAGE}} to $new [skip ci]"
+        git commit -m "chore: bump {{.PACKAGE}} to $new"
         git tag "$tag"
         echo "Bumped {{.PACKAGE}}: $current → $new  (tag: $tag)"
 
