@@ -340,6 +340,80 @@ def measure_sleeve_length(joints, mesh=None, acromion_fn=None):
 measure_arm_length = measure_sleeve_length
 
 
+def measure_sleeve_length_from_joints(joints, upperarm_loop_cm):
+    """ISO 8559-1 sleeve length — fully differentiable through Anny LBS.
+
+    ISO 8559-1 §5.4.14 + §5.4.15: distance from shoulder point (acromion)
+    over the elbow (olecranon, with arm slightly bent) to the wrist (ulnar
+    styloid), measured along the body surface as a tape arc.
+
+    The slow ISO reference (`measure_sleeve_length_iso_reference`) computes
+    this exactly: it poses the body in rest pose with elbow flexed ~42°,
+    detects acromion / olecranon / wrist styloid landmarks via skinning
+    weights and bone-perpendicular geometry, slices the body with two
+    planes (one through the upper-arm bone + acromion + olecranon, one
+    through the forearm bone + olecranon + wrist styloid), and walks
+    Dijkstra shortest paths along the resulting contours. None of that is
+    differentiable.
+
+    This function is the FAST DIFFERENTIABLE APPROXIMATION calibrated
+    against that reference. Same architectural pattern as
+    measure_inseam_from_joints:
+
+        sleeve_iso_cm ≈ bone_chain_cm + a*upperarm_loop_cm + bias
+
+    where bone_chain_cm is the sum of upper arm + forearm bone lengths
+    (pose-invariant: same in A-pose and rest pose), and upperarm_loop_cm
+    is the differentiable vertex-loop circumference of the upperarm.
+
+    Calibration: 2-param least squares on the 6 anny testdata bodies vs
+    the surface-walk reference. RMS = 0.33 cm, max = 0.55 cm.
+
+    The arithmetic is type-polymorphic — pass numpy arrays for reporting,
+    torch tensors for gradient-based optimization.
+
+    Args:
+        joints: dict with 'l_shoulder_ball', 'r_shoulder_ball', 'l_elbow',
+                'r_elbow', 'l_wrist', 'r_wrist' as (3,) arrays/tensors
+                (Z-up, metres). The shoulder anchors MUST be the
+                upperarm01.head ball joints, NOT the legacy 'l_shoulder'
+                bone-tail anchors used by measure_sleeve_length.
+        upperarm_loop_cm: differentiable vertex-loop circumference of the
+                          upperarm in cm
+                          (= compute_loop_circumference(verts, BASE_MESH_UPPERARM_VERTICES) * 100)
+
+    Returns:
+        sleeve_length_cm — scalar (numpy float or torch tensor depending
+        on input dtype). Returns 0 if any joint is missing.
+    """
+    sums = []
+    for side in ("l", "r"):
+        sh = joints.get(f"{side}_shoulder_ball")
+        el = joints.get(f"{side}_elbow")
+        wr = joints.get(f"{side}_wrist")
+        if sh is None or el is None or wr is None:
+            continue
+        sums.append(_norm(sh - el) + _norm(el - wr))
+
+    if not sums:
+        return 0
+    bone_chain_m = sum(sums) / len(sums)
+    bone_chain_cm = bone_chain_m * 100
+
+    # Empirical fit (n=6, RMS=0.33 cm vs surface walk reference).
+    # See findings/sleeve_length_iso_compliance.md for the calibration data.
+    A_LOOP = 0.13803
+    A_BIAS = 2.04621
+    return bone_chain_cm + A_LOOP * upperarm_loop_cm + A_BIAS
+
+
+def _norm(v):
+    """Type-polymorphic 3-vector norm: numpy array or torch tensor."""
+    if hasattr(v, "norm"):  # torch tensor
+        return v.norm()
+    return float(np.linalg.norm(v))
+
+
 def find_side_neck_point(slicer, c7_z):
     """Find the ISO 8559-1 §3.1.7 side neck point (right side).
 

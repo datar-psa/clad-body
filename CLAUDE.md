@@ -72,11 +72,21 @@ The legacy entry points `generate_anny_mesh_from_params()`, `measure_body_from_v
 |-------|------|------|
 | **A** Core torso | height, bust, waist, hip, stomach, underbust, belly_depth | ~100 ms |
 | **B** Limb sweeps | thigh, knee, calf, upperarm | ~300 ms |
-| **C** Joint linear | shoulder_width, sleeve_length | ~100 ms |
+| **C** Joint linear | shoulder_width, sleeve_length (differentiable) | ~100 ms |
 | **D** Perpendicular | neck, wrist | ~200 ms |
 | **E** Mesh geometry | inseam (joint-based, differentiable), crotch_length, front_rise, back_rise | ~100 ms |
 | **F** Surface trace | shirt_length (depends on E) | ~100 ms |
 | **G** Body composition | volume, mass, bmi, body_fat (depends on D) | ~50 ms |
+
+### Group C notes — sleeve length (ISO 8559-1 §5.4.14 + §5.4.15)
+
+**Sleeve length is differentiable through LBS.** `sleeve_length_cm` is computed from the bone-chain `||shoulder_ball − elbow|| + ||elbow − wrist||` (pose-invariant — same in A-pose and rest pose) plus a soft-tissue correction `offset = a*upperarm_loop + bias` where `upperarm_loop` is the differentiable vertex-loop upperarm circumference. All inputs flow through Anny's blendshapes + LBS skinning, so gradients propagate end-to-end. Calibrated to RMS 0.33 cm vs the slow plane-slice surface walk reference on the 6 testdata bodies. Implementation: `measure_sleeve_length_from_joints` in [`clad_body/measure/_lengths.py`](clad_body/measure/_lengths.py).
+
+The shoulder anchor is `upperarm01.head` (the actual ball joint), exposed as the `l_shoulder_ball`/`r_shoulder_ball` keys in `ANNY_JOINT_MAP`. The legacy `l_shoulder` key (= `upperarm01.tail`, mid-bicep) is still in the map and used by `measure_shoulder_width` + `find_acromion`, which are unchanged.
+
+**Slow ISO reference** ([`measure_sleeve_length_iso_reference`](clad_body/measure/anny.py) in `anny.py`): re-poses the body with `lowerarm01` rotation = 0° (Anny's natural rest pose has the elbow already flexed at ~42° — the convention for "elbow bent" in ISO §5.4.14/5.4.15), detects acromion / olecranon / wrist styloid via skinning weights and bone-perpendicular geometry, slices the body with two planes (upper-arm + forearm), and walks Dijkstra shortest paths along the resulting contours. ~1 second per body. Used only for calibration, not in the gradient hot loop.
+
+The two-tier split mirrors `measure_inseam` (slow mesh sweep) / `measure_inseam_from_joints` (fast differentiable).
 
 ### Group E notes — inseam, crotch trace
 

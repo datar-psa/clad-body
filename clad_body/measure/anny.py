@@ -53,6 +53,7 @@ from clad_body.measure._lengths import (
     measure_shirt_length,
     measure_shoulder_width,
     measure_sleeve_length,
+    measure_sleeve_length_from_joints,
 )
 from clad_body.measure._render import extract_measurement_contours, render_4view
 from clad_body.measure._lengths import extract_joints_from_names
@@ -80,6 +81,12 @@ ANNY_JOINT_MAP = {
     # via find_acromion() (max Z above the tail).
     "l_shoulder": [("upperarm01.L", "tail")],
     "r_shoulder": [("upperarm01.R", "tail")],
+    # Ball joint = upperarm01 HEAD = the actual shoulder articulation point.
+    # Used by measure_sleeve_length_from_joints. Distinct from "l_shoulder"
+    # (which is the bone TAIL = mid-bicep) because the legacy find_acromion
+    # path is calibrated against the tail-anchored bone position.
+    "l_shoulder_ball": [("upperarm01.L", "head")],
+    "r_shoulder_ball": [("upperarm01.R", "head")],
     "l_elbow":   ["lowerarm01.L"],
     "r_elbow":   ["lowerarm01.R"],
     "l_wrist":   ["wrist.L"],
@@ -278,6 +285,284 @@ def find_acromion(verts, shoulder_joint, side="left"):
     if len(candidates) == 0:
         return shoulder_joint.copy()
     return candidates[np.argmax(candidates[:, 2])].copy()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ISO 8559-1 sleeve length: slow reference (calibration only)
+#
+# This is the SLOW REFERENCE function used to calibrate the differentiable
+# runtime function `measure_sleeve_length_from_joints` in _lengths.py.
+#
+# Architecture (mirrors `measure_inseam` / `measure_inseam_from_joints`):
+#   - measure_sleeve_length_iso_reference (this file): non-differentiable,
+#     poses the body in rest pose with natural ~42° elbow flex, detects
+#     acromion / olecranon / wrist styloid via skinning weights and bone
+#     geometry, slices the body with two planes (upper-arm + forearm),
+#     walks Dijkstra shortest paths along the resulting contours.
+#     Used once per body during calibration.
+#   - measure_sleeve_length_from_joints (_lengths.py): fast differentiable,
+#     bone chain + linear correction calibrated against this reference.
+#     Used in the gradient hot loop.
+#
+# Per ISO 8559-1 §3.1.1: shoulder point = "most lateral point of the
+# lateral edge of the spine (acromial process) of the scapula, projected
+# vertically to the surface of the skin."
+# Per ISO §3.1.10: elbow point = "most prominent point of the olecranon
+# of ulna" (the bony bump on the back of a flexed elbow).
+# Per ISO §5.4.14/5.4.15: upper arm length and lower arm length are
+# measured along the body surface with the elbow bent.
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _vertices_skinned_to(model, bone_indices, threshold=0.1):
+    """Boolean (V,) mask: True if vertex has weight > threshold on any of the
+    listed bone indices (taking the sum across the up-to-8 bone slots)."""
+    vbw = model.vertex_bone_weights.detach().cpu().numpy()
+    vbi = model.vertex_bone_indices.detach().cpu().numpy()
+    weight_per_vertex = np.zeros(vbw.shape[0])
+    for bi in bone_indices:
+        slot_match = (vbi == bi)
+        weight_per_vertex += np.where(slot_match, vbw, 0).sum(axis=1)
+    return weight_per_vertex > threshold
+
+
+def _detect_acromion_iso(model, verts, ball_pos, upperarm01_tail, side):
+    """ISO acromion: surface vertex in a tube around the perpendicular ray
+    from the ball joint, perpendicular to the upperarm01 bone, picking the
+    HIGHEST Z within the tube.
+
+    The ray geometry mirrors how a tape measurer projects the bony
+    acromial process onto the skin: starting at the ball joint and going
+    outward perpendicular to the humerus, the first point on the skin
+    along that direction (constrained to be high) is the acromion.
+    """
+    labels = list(model.bone_labels)
+    bone_idx = [labels.index(f"shoulder01.{side}"), labels.index(f"upperarm01.{side}")]
+    skin_mask = _vertices_skinned_to(model, bone_idx, threshold=0.1)
+
+    u = upperarm01_tail - ball_pos
+    u = u / np.linalg.norm(u)
+
+    # Lateral perpendicular direction (outward, perpendicular to bone)
+    side_sign = +1 if side == "L" else -1
+    world_lat = np.array([side_sign, 0.0, 0.0], dtype=verts.dtype)
+    lateral = world_lat - (world_lat @ u) * u
+    lateral = lateral / np.linalg.norm(lateral)
+
+    candidates = verts[skin_mask]
+    delta = candidates - ball_pos
+    lateral_proj = delta @ lateral
+    perp = delta - lateral_proj[:, None] * lateral
+    perp_dist = np.linalg.norm(perp, axis=1)
+
+    near_tube = (perp_dist < 0.015) & (lateral_proj > 0)
+    if not near_tube.any():
+        raise ValueError(f"No skinned vertices near acromion ray on {side} side")
+    tube_verts = candidates[near_tube]
+    return tube_verts[np.argmax(tube_verts[:, 2])]
+
+
+def _detect_olecranon_iso(model, verts, ball_pos, elbow_pos, wrist_pos, side):
+    """ISO olecranon: surface vertex within 5 cm of the elbow joint, furthest
+    along the geometric back-of-elbow direction.
+
+    The "back of bent elbow" direction is the bisector of the OUTSIDE of
+    the bend: -unit(unit(ball-elbow) + unit(wrist-elbow)). This points
+    posteriorly when the elbow is flexed and lands on the olecranon
+    protrusion regardless of how much the elbow is bent.
+    """
+    labels = list(model.bone_labels)
+    bone_idx = [labels.index(f"upperarm02.{side}"), labels.index(f"lowerarm01.{side}")]
+    skin_mask = _vertices_skinned_to(model, bone_idx, threshold=0.1)
+    near_mask = np.linalg.norm(verts - elbow_pos, axis=1) < 0.05
+    mask = skin_mask & near_mask
+    if not mask.any():
+        raise ValueError(f"No vertices near elbow joint on {side} side")
+    u = ball_pos - elbow_pos; u = u / np.linalg.norm(u)
+    v = wrist_pos - elbow_pos; v = v / np.linalg.norm(v)
+    back_dir = -(u + v)
+    back_dir = back_dir / np.linalg.norm(back_dir)
+    candidates = verts[mask]
+    proj = (candidates - elbow_pos) @ back_dir
+    return candidates[np.argmax(proj)]
+
+
+def _detect_wrist_styloid_iso(model, verts, wrist_pos, side):
+    """ISO wrist landmark (ulnar styloid approximation): most lateral surface
+    vertex within a thin Z-slab around the wrist joint, restricted to
+    lowerarm02-skinned verts (excludes hand verts distal to the wrist crease).
+    """
+    labels = list(model.bone_labels)
+    bone_idx = [labels.index(f"lowerarm02.{side}")]
+    skin_mask = _vertices_skinned_to(model, bone_idx, threshold=0.1)
+    z_slab = np.abs(verts[:, 2] - wrist_pos[2]) < 0.008
+    mask = skin_mask & z_slab
+    if not mask.any():
+        raise ValueError(f"No vertices in Z-slab around wrist joint on {side} side")
+    candidates = verts[mask]
+    if side == "L":
+        return candidates[np.argmax(candidates[:, 0])]
+    return candidates[np.argmin(candidates[:, 0])]
+
+
+def _slice_and_walk(verts, faces, p_start, p_end, p_plane):
+    """Plane-mesh slice between p_start and p_end, with the plane containing
+    the third point p_plane (typically a bone joint to fix the orientation).
+    Walks the shortest path along the contour from p_start to p_end.
+
+    Returns (length_cm, polyline_vertices) or raises if no contour exists.
+    """
+    import trimesh
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    normal = np.cross(p_end - p_start, p_plane - p_start)
+    normal = normal / np.linalg.norm(normal)
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    lines = trimesh.intersections.mesh_plane(
+        mesh, plane_normal=normal, plane_origin=p_start,
+    )
+    if len(lines) == 0:
+        raise ValueError("Plane missed mesh")
+
+    # Chain segments and run Dijkstra
+    segments = lines.reshape(-1, 3)
+    n_seg = len(lines)
+    eps = 1e-5
+    rounded = np.round(segments / eps).astype(np.int64)
+    _, inverse = np.unique(rounded, axis=0, return_inverse=True)
+    n_unique = inverse.max() + 1
+    unique_pts = np.zeros((n_unique, 3))
+    for i in range(len(segments)):
+        unique_pts[inverse[i]] = segments[i]
+
+    rows, cols, data = [], [], []
+    for s in range(n_seg):
+        a = int(inverse[2 * s])
+        b = int(inverse[2 * s + 1])
+        if a == b:
+            continue
+        w = float(np.linalg.norm(unique_pts[a] - unique_pts[b]))
+        rows.append(a); cols.append(b); data.append(w)
+        rows.append(b); cols.append(a); data.append(w)
+    graph = csr_matrix((data, (rows, cols)), shape=(n_unique, n_unique))
+
+    i_start = int(np.argmin(np.linalg.norm(unique_pts - p_start, axis=1)))
+    i_end = int(np.argmin(np.linalg.norm(unique_pts - p_end, axis=1)))
+
+    dist, pred = dijkstra(graph, indices=i_start, return_predecessors=True)
+    if pred[i_end] == -9999:
+        raise ValueError("No contour path between landmarks")
+    path = [i_end]
+    cur = i_end
+    while cur != i_start:
+        cur = int(pred[cur])
+        path.append(cur)
+    path.reverse()
+    return float(dist[i_end]) * 100, unique_pts[path]
+
+
+def measure_sleeve_length_iso_reference(body, side="L"):
+    """Slow ISO 8559-1 sleeve length reference for calibration.
+
+    Re-poses the body in REST POSE (lowerarm01 rotation 0° → natural ~42°
+    elbow flex, the convention for "elbow bent" in ISO §5.4.14/5.4.15),
+    detects acromion / olecranon / wrist styloid landmarks, slices the
+    body with two planes (upper-arm bone + acromion + olecranon, forearm
+    bone + olecranon + wrist styloid), and walks the shortest path along
+    each contour.
+
+    NOT differentiable. Used once per body during calibration of
+    `measure_sleeve_length_from_joints` (the fast differentiable runtime).
+    Costs ~1 second per body.
+
+    Args:
+        body:  AnnyBody from load_anny_from_params (the model is used; the
+               body's vertices/joints are NOT used because we re-pose).
+        side:  "L" or "R" — which arm to measure. Default left.
+
+    Returns:
+        dict with 'sleeve_length_cm', 'acromion', 'olecranon',
+        'wrist_styloid', and 'path_vertices' (the polyline of the surface
+        walk for visualization).
+    """
+    import torch
+
+    model = body.model
+    pheno = getattr(model, "_last_phenotype_kwargs", None)
+    if pheno is None:
+        raise ValueError("body.model has no _last_phenotype_kwargs; "
+                         "use load_anny_from_params first")
+
+    # Build a rest pose: lowerarm01 rotation = 0° (natural Anny rest position)
+    n = model.bone_count
+    # Anny models don't expose a single .parameters() iterator; pull device
+    # from any tensor attribute we can find.
+    device = torch.device("cpu")
+    if hasattr(model, "vertex_bone_weights"):
+        device = model.vertex_bone_weights.device
+    pose = torch.eye(4, device=device, dtype=torch.float32)
+    pose = pose.unsqueeze(0).unsqueeze(0).expand(1, n, 4, 4).clone()
+    # No rotation applied — rest pose is natural ~42° elbow flex
+
+    # Re-run forward pass with rest pose (slow path: ~0.5-1s)
+    local_changes = {}
+    if hasattr(body, "phenotype_params") and body.phenotype_params:
+        local_changes = body.phenotype_params.get("_local_changes", {}) or {}
+    local_kwargs = {l: torch.tensor([v], dtype=torch.float32, device=device)
+                    for l, v in local_changes.items()}
+    with torch.no_grad():
+        out = model(
+            pose_parameters=pose,
+            phenotype_kwargs=pheno,
+            local_changes_kwargs=local_kwargs,
+            pose_parameterization="root_relative_world",
+            return_bone_ends=True,
+        )
+
+    verts_yup = out["vertices"][0].cpu().numpy()
+    heads = out["bone_heads"][0].cpu().numpy()
+    tails = out["bone_tails"][0].cpu().numpy()
+    faces = (model.faces.detach().cpu().numpy()
+             if hasattr(model.faces, "detach") else np.array(model.faces)).astype(np.int64)
+
+    # Anny outputs are Z-up natively (verified by checking extents). Just
+    # shift to floor and XY-centre to match the canonical clad-body frame.
+    z_min = float(verts_yup[:, 2].min())
+    verts = verts_yup.copy()
+    verts[:, 2] -= z_min
+    cxy = (verts[:, :2].max(0) + verts[:, :2].min(0)) / 2
+    verts[:, 0] -= cxy[0]; verts[:, 1] -= cxy[1]
+    heads = heads.copy(); heads[:, 2] -= z_min
+    heads[:, 0] -= cxy[0]; heads[:, 1] -= cxy[1]
+    tails = tails.copy(); tails[:, 2] -= z_min
+    tails[:, 0] -= cxy[0]; tails[:, 1] -= cxy[1]
+
+    labels = list(model.bone_labels)
+    ball_pos = heads[labels.index(f"upperarm01.{side}")]
+    upperarm01_tail = tails[labels.index(f"upperarm01.{side}")]
+    elbow_pos = heads[labels.index(f"lowerarm01.{side}")]
+    wrist_pos = heads[labels.index(f"wrist.{side}")]
+
+    # Landmark detection
+    acr = _detect_acromion_iso(model, verts, ball_pos, upperarm01_tail, side)
+    olc = _detect_olecranon_iso(model, verts, ball_pos, elbow_pos, wrist_pos, side)
+    wrs = _detect_wrist_styloid_iso(model, verts, wrist_pos, side)
+
+    # Two-plane surface walk
+    len_upper, walk_upper = _slice_and_walk(verts, faces, acr, olc, ball_pos)
+    len_forearm, walk_forearm = _slice_and_walk(verts, faces, olc, wrs, elbow_pos)
+    walked = np.vstack([walk_upper, walk_forearm[1:]])  # avoid duplicate olecranon
+    total_cm = len_upper + len_forearm
+
+    return {
+        "sleeve_length_cm": total_cm,
+        "acromion": acr,
+        "olecranon": olc,
+        "wrist_styloid": wrs,
+        "path_vertices": walked,
+    }
+
 
 # Breast bone indices (breast.L=45, breast.R=46 in Anny skeleton).
 BREAST_BONES = {45, 46}
@@ -685,8 +970,14 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["shoulder_width_cm"] = sw_cm
         if sw_arc is not None:
             measurements["_shoulder_arc_pts"] = sw_arc
-        measurements["sleeve_length_cm"] = measure_sleeve_length(
-            joints, mesh=mesh_tri, acromion_fn=find_acromion)
+        # ISO 8559-1 sleeve length: differentiable, calibrated against the
+        # slow plane-slice surface walk reference (measure_sleeve_length_iso_reference
+        # in this file). See measure_sleeve_length_from_joints docstring in
+        # _lengths.py for the formula and calibration details.
+        upperarm_loop_cm = compute_loop_circumference(
+            verts, anthro.upperarm_vertex_indices).item() * 100
+        measurements["sleeve_length_cm"] = measure_sleeve_length_from_joints(
+            joints, upperarm_loop_cm)
 
     # ── Group F: Surface trace (shirt length) ────────────────────────────
     if GROUP_F in groups:
