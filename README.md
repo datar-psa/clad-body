@@ -115,7 +115,7 @@ Every measurement is tagged across 5 dimensions. Each carries a human-readable `
 
 Garment codes: **T**ops, **B**ottoms, **D**resses, **O**uterwear, **U**nderwear.
 
-| | Key | Description | ISO | Type | Std | Region | Tier | Grp | Gar |
+| Contour | Key | Description | ISO | Type | Std | Region | Tier | Grp | Gar |
 |---|---|---|---|---|---|---|---|---|---|
 | ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/bust.png) | `height_cm` | Vertical distance from floor to top of head. Stand erect, feet together. | 5.1.1 | scalar | iso | full_body | core | A | all |
 | ![](https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/contours/bust.png) | `bust_cm` | Horizontal circumference at the fullest part of the chest/bust. Tape under armpits, across bust prominence, level and snug. | 5.3.4 | circ | iso | torso | core | A | T,D,O,U |
