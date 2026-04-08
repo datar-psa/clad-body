@@ -18,6 +18,50 @@ m = measure(body, device="cuda")        # GPU acceleration
 
 For optimisation hot loops where you already have a model and a fresh forward-pass vertex tensor and don't want to pay for `load_anny_from_params()` re-creating the model, use `load_anny_from_verts(verts, model, phenotype_kwargs=..., bone_heads=..., bone_tails=...)` which wraps the existing model + verts into an `AnnyBody` ready for `measure()`.
 
+### Differentiable measurements (`measure_grad`)
+
+```python
+from clad_body.measure import measure, measure_grad
+
+# Reporting path (numpy, JSON-safe)
+body = load_anny_from_params(params)
+m = measure(body, only=["waist_cm", "inseam_cm"])
+
+# Gradient path (torch, for autograd loops)
+# Requires a forward pass WITHOUT torch.no_grad() so the graph is preserved:
+output = model(pose_parameters=a_pose, phenotype_kwargs=kwargs,
+               return_bone_ends=True)
+model._last_bone_heads = output["bone_heads"]
+model._last_bone_tails = output["bone_tails"]
+verts = output["vertices"]  # (1, V, 3) — keep computation graph, don't detach
+
+m = measure_grad(model, verts, only=["waist_cm", "inseam_cm", "sleeve_length_cm"])
+loss = (m["waist_cm"] - target_waist) ** 2 + (m["inseam_cm"] - target_inseam) ** 2
+loss.backward()  # gradients flow back to phenotype_kwargs tensors
+```
+
+**When to use which API:**
+
+| API | Use for | Returns |
+|-----|---------|---------|
+| `measure(body)` | Reporting, JSON export, all keys, MHR bodies | `dict[str, float]` |
+| `measure_grad(model, verts)` | Gradient-based optimisation hot loops (tune.py) | `dict[str, torch.Tensor]` |
+
+**`measure_grad` supported keys (Anny only, v1):**
+- `height_cm` — `verts[:, :, height_axis].max() - .min()`
+- `waist_cm` — vertex-loop circumference (waist loop)
+- `thigh_cm` — vertex-loop circumference (thigh loop)
+- `upperarm_cm` — vertex-loop circumference (upperarm loop)
+- `inseam_cm` — `measure_inseam_from_joints` (hip joint Z + soft-tissue correction)
+- `sleeve_length_cm` — `measure_sleeve_length_from_joints` (bone chain + upperarm correction)
+
+Requesting any other key raises `ValueError` listing what IS supported. Silent numpy fallback is intentionally absent — it would break gradient flow without warning.
+
+**`measure_grad` does NOT:**
+- Support MHR (TODO: add `_measure_mhr_grad` when needed)
+- Cache results (caller controls forward-pass frequency)
+- Fall back to numpy for unsupported keys
+
 The legacy entry points `generate_anny_mesh_from_params()`, `measure_body_from_verts()`, and `measure_body()` were **removed in 0.3.0** — they created a new Anny model (~400 ms) on every call.
 
 ## Performance rules

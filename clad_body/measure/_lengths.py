@@ -693,9 +693,15 @@ def measure_inseam_from_joints(joints, height, thigh_loop_cm):
     offset_cm = A_THIGH * thigh_loop_cm + A_PELV * pelvis_w_cm + A_BIAS
 
     crotch_z = hip_z + offset_cm / 100
-    inseam_cm = float(crotch_z) * 100
-    crotch_pct = (float(crotch_z) / height * 100) if height > 0 else 0
-    return inseam_cm, float(crotch_z), crotch_pct
+    # inseam_cm is the only return value that flows through gradient hot loops;
+    # preserve tensor type-polymorphism. The other two (crotch_z, crotch_pct)
+    # feed numpy mesh-sweep callers downstream, so they stay as Python floats.
+    inseam_cm = crotch_z * 100
+    crotch_z_scalar = (
+        crotch_z.detach().item() if hasattr(crotch_z, "detach") else float(crotch_z)
+    )
+    crotch_pct = (crotch_z_scalar / height * 100) if height > 0 else 0
+    return inseam_cm, crotch_z_scalar, crotch_pct
 
 
 def measure_inseam(mesh, height, step=0.002):

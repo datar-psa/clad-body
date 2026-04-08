@@ -620,10 +620,15 @@ def breast_floor_z(model, mesh_verts, weight_threshold=0.3):
 # form clean anatomical rings. They ARE used for Z-height anchoring only (the mean Z
 # of each loop gives a reliable anatomical landmark at ~75% for bust, ~52% for hips).
 # Do NOT use these for circumference measurement — use plane sweep instead.
-# Thigh and upperarm loops are used by tuning_anny.py for differentiable optimization.
+# Upperarm loop is reasonable as a differentiable proxy (< 1 cm vs plane sweep).
+# THIGH LOOP IS TOTALLY BROKEN — consistently under-reports by ~3-6 cm vs the plane
+# sweep because the 20 selected vertices do not form a complete anatomical ring around
+# the thigh cross-section. DO NOT use BASE_MESH_THIGH_VERTICES for reporting. It is
+# kept only as a differentiable gradient signal for optimization (the gradient direction
+# is correct even if the absolute value is wrong). See findings/vertex_loops_vs_plane_sweep.md.
 BASE_MESH_HIP_VERTICES = [4296, 4295, 4291, 4292, 4336, 4339, 4331, 4359, 10983, 10958, 10965, 10962, 10922, 10921, 10925, 10926, 10923, 10924, 10860, 10867, 10853, 10854, 4218, 4217, 4233, 4225, 4294, 4293]
 BASE_MESH_BUST_VERTICES = [1445, 1438, 1855, 1888, 1762, 1798, 8470, 8434, 8560, 8527, 8126, 8133, 8315, 8313, 8365, 8241, 8247, 8253, 1575, 1569, 1563, 1693, 1641, 1643]
-BASE_MESH_THIGH_VERTICES = [6745, 6744, 6743, 6742, 6741, 6740, 6739, 6738, 6737, 6736, 6755, 6754, 6753, 6752, 6751, 6750, 6749, 6748, 6747, 6746]
+BASE_MESH_THIGH_VERTICES = [6745, 6744, 6743, 6742, 6741, 6740, 6739, 6738, 6737, 6736, 6755, 6754, 6753, 6752, 6751, 6750, 6749, 6748, 6747, 6746]  # BROKEN — see comment above
 BASE_MESH_UPPERARM_VERTICES = [3788, 1710, 1706, 1705, 1701, 1702, 1703, 1704, 1694, 1700, 1695, 1696, 3763, 1697, 1698, 1699, 1709, 1708, 1707, 3850]
 
 
@@ -677,21 +682,90 @@ def compute_loop_circumference(verts, vertex_indices):
     return torch.sum(torch.linalg.norm(loop_rolled - loop_verts, dim=-1), dim=-1)
 
 
-def _extract_anny_joints(model):
+def _extract_anny_joints(model, as_tensor=False):
     """Extract canonical joint positions from Anny model after forward pass.
 
     Uses bone_heads from the last forward pass (stashed on model by
     load_anny_from_params / load_anny_from_verts). Falls back to template_bone_heads
-    if no forward pass output is available.
+    if no forward pass output is available (numpy path only).
 
     For shoulder joints (l_shoulder, r_shoulder), uses bone TAILS (end of
     upperarm01) instead of heads. The tail of upperarm01 sits at the
     outer end of the upper arm bone, closer to the actual shoulder tip.
 
+    Args:
+        model: Anny rigged model with ``_last_bone_heads`` / ``_last_bone_tails``
+            stashed from the most recent forward pass.
+        as_tensor: If ``True``, return (3,) torch tensors that preserve autograd
+            history from the forward pass that produced the bone data.  The
+            Y-up → Z-up coordinate swap and floor-alignment are performed
+            differentiably so that gradients flow through Z positions.
+            Requires ``model._last_bone_heads`` to be present (no template
+            fallback — templates have no live gradient).
+            Default ``False`` preserves the existing numpy behaviour.
+
     Returns:
-        dict mapping canonical joint names to (3,) numpy arrays (Z-up, metres),
+        dict mapping canonical joint names to (3,) arrays/tensors (Z-up, metres),
         or empty dict if bone data unavailable.
     """
+    if as_tensor:
+        # ── Torch path: preserves autograd history ──────────────────────────
+        bone_heads = getattr(model, "_last_bone_heads", None)
+        bone_tails = getattr(model, "_last_bone_tails", None)
+        if bone_heads is None:
+            raise ValueError(
+                "model._last_bone_heads is missing — the model must be run with "
+                "return_bone_ends=True before calling measure_grad(). "
+                "Use load_anny_from_params() which does this automatically."
+            )
+
+        heads = bone_heads[0]  # (n_joints, 3) — grad flows from here
+        tails = bone_tails[0] if bone_tails is not None else None
+
+        # Detect height axis under no_grad — result is a Python int, not tracked
+        with torch.no_grad():
+            extents = heads.max(dim=0).values - heads.min(dim=0).values
+            height_axis = int(extents.argmax().item())
+
+        if height_axis == 1:  # Y-up → Z-up: [x, y, z] → [x, z, -y]
+            heads = torch.stack([heads[:, 0], heads[:, 2], -heads[:, 1]], dim=-1)
+            if tails is not None:
+                tails = torch.stack([tails[:, 0], tails[:, 2], -tails[:, 1]], dim=-1)
+
+        # Floor at Z=0 (differentiable — z_min carries gradient through Z positions)
+        z_min = heads[:, 2].min()
+        heads = torch.stack([heads[:, 0], heads[:, 1], heads[:, 2] - z_min], dim=-1)
+        if tails is not None:
+            tails = torch.stack([tails[:, 0], tails[:, 1], tails[:, 2] - z_min], dim=-1)
+
+        bone_labels = list(model.bone_labels) if hasattr(model, "bone_labels") else []
+        if not bone_labels:
+            return {}
+
+        # Same extraction logic as extract_joints_from_names but with torch tensors
+        name_to_idx = {name: i for i, name in enumerate(bone_labels)}
+        result = {}
+        for canon_name, candidates in ANNY_JOINT_MAP.items():
+            for cand in candidates:
+                if isinstance(cand, str):
+                    bone, mode = cand, "head"
+                else:
+                    bone, mode = cand
+                if bone not in name_to_idx:
+                    continue
+                i = name_to_idx[bone]
+                if mode == "head":
+                    result[canon_name] = heads[i]
+                elif mode == "tail" and tails is not None:
+                    result[canon_name] = tails[i]
+                elif mode == "midpoint" and tails is not None:
+                    result[canon_name] = 0.5 * (heads[i] + tails[i])
+                else:
+                    continue
+                break
+        return result
+
+    # ── Numpy path (existing behaviour) ─────────────────────────────────────
     bone_heads = getattr(model, "_last_bone_heads", None)
     bone_tails = getattr(model, "_last_bone_tails", None)
     if bone_heads is not None:
@@ -934,15 +1008,11 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
 
     # ── Group E: Mesh geometry (inseam, crotch) ──────────────────────────
     if GROUP_E in groups:
-        if joints.get("l_hip") is not None and joints.get("r_hip") is not None:
-            # Differentiable inseam: hip joint Z + soft-tissue correction
-            # using vertex-loop thigh circumference and inter-femoral width.
-            thigh_loop_cm = compute_loop_circumference(
-                verts, anthro.thigh_vertex_indices).item() * 100
-            inseam_cm, inseam_z, inseam_pct = measure_inseam_from_joints(
-                joints, height, thigh_loop_cm)
-        else:
-            inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
+        # Reporting path: ISO 8559-1 mesh sweep (accurate, non-differentiable).
+        # For gradient-based optimisation use measure_grad() which calls
+        # measure_inseam_from_joints() — a differentiable approximation calibrated
+        # against this sweep.
+        inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
         measurements["inseam_cm"] = inseam_cm
         measurements["_inseam_z"] = inseam_z
         measurements["_inseam_pct"] = inseam_pct
@@ -970,14 +1040,12 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["shoulder_width_cm"] = sw_cm
         if sw_arc is not None:
             measurements["_shoulder_arc_pts"] = sw_arc
-        # ISO 8559-1 sleeve length: differentiable, calibrated against the
-        # slow plane-slice surface walk reference (measure_sleeve_length_iso_reference
-        # in this file). See measure_sleeve_length_from_joints docstring in
-        # _lengths.py for the formula and calibration details.
-        upperarm_loop_cm = compute_loop_circumference(
-            verts, anthro.upperarm_vertex_indices).item() * 100
-        measurements["sleeve_length_cm"] = measure_sleeve_length_from_joints(
-            joints, upperarm_loop_cm)
+        # ISO 8559-1 sleeve length: slow surface-walk reference (~1 s per body).
+        # For gradient-based optimisation use measure_grad() which calls
+        # measure_sleeve_length_from_joints() — a differentiable approximation
+        # calibrated against this reference.
+        sleeve_ref = measure_sleeve_length_iso_reference(body)
+        measurements["sleeve_length_cm"] = sleeve_ref["sleeve_length_cm"]
 
     # ── Group F: Surface trace (shirt length) ────────────────────────────
     if GROUP_F in groups:
@@ -1042,6 +1110,154 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
                      title=title, model_label="Anny", torso_mesh=torso_mesh)
 
     return measurements
+
+
+# ── Differentiable measurements ───────────────────────────────────────────────
+
+#: Keys supported by :func:`measure_grad`.  All six have fully differentiable
+#: implementations that compose existing building blocks.  Callers can inspect
+#: this set to check support before requesting a key.
+SUPPORTED_KEYS = frozenset({
+    "height_cm",
+    "waist_cm",
+    "thigh_cm",
+    "upperarm_cm",
+    "inseam_cm",
+    "sleeve_length_cm",
+})
+
+
+def measure_grad(model, verts, only=None):
+    """Differentiable Anny measurements for gradient-based optimisation.
+
+    Companion to :func:`clad_body.measure.measure`.  Returns torch scalars with
+    autograd history preserved from the forward pass that produced ``verts``.
+    Designed for hot loops that have live torch state and need measurements as
+    part of a loss function.
+
+    Only implements measurement keys that have a fully differentiable
+    implementation.  Requesting an unsupported key raises :exc:`ValueError`
+    listing what IS supported.  This is intentional — silent dispatch to a
+    numpy fallback would break gradient flow without warning.
+
+    Example (one-liner for tune.py)::
+
+        m = measure_grad(model, verts, only=["waist_cm", "inseam_cm", "sleeve_length_cm"])
+        loss = (m["waist_cm"] - target_waist) ** 2 + ...
+
+    Args:
+        model: Anny rigged model.  Must have ``_last_bone_heads`` and
+            ``_last_bone_tails`` populated by the same forward pass that
+            produced ``verts``.  :func:`~clad_body.load.anny.load_anny_from_params`
+            and a ``model(..., return_bone_ends=True)`` call both populate
+            these — see :func:`_measure_anny`.
+        verts: ``(1, V, 3)`` torch tensor from ``model(...)["vertices"]``, in
+            the model's native coordinate system (Y-up — same as bone_heads).
+            Must retain its computation graph (do NOT detach) for gradients to
+            flow back to phenotype kwargs.
+        only: list of measurement keys to compute.  ``None`` means all
+            supported keys.  Order does not matter.
+
+    Returns:
+        dict mapping measurement key → 0-dim torch tensor (cm) with autograd
+        history preserved.  Same key naming as :func:`~clad_body.measure.measure`
+        — e.g. ``"inseam_cm"``, ``"sleeve_length_cm"`` — so callers can swap
+        between the two APIs with no key translation.
+
+    Raises:
+        ValueError: if ``only`` contains a key not in :data:`SUPPORTED_KEYS`, or
+            if ``model._last_bone_heads`` / ``_last_bone_tails`` are missing.
+
+    Supported keys (Anny):
+        - ``height_cm``        — ``verts[:, :, height_axis].max() - .min()``
+        - ``waist_cm``         — vertex-loop circumference (waist loop)
+        - ``thigh_cm``         — vertex-loop circumference (thigh loop)
+        - ``upperarm_cm``      — vertex-loop circumference (upperarm loop)
+        - ``inseam_cm``        — :func:`~clad_body.measure._lengths.measure_inseam_from_joints`
+        - ``sleeve_length_cm`` — :func:`~clad_body.measure._lengths.measure_sleeve_length_from_joints`
+
+    Note:
+        MHR support is out of scope for v1 — Anny only.  A parallel
+        ``_measure_mhr_grad`` will be needed when MHR gradient tuning is
+        required.
+
+        ``measure()`` remains the reporting / JSON-safe API.  Use
+        ``measure_grad()`` only inside autograd loops where you already have
+        live torch tensors.
+    """
+    requested = frozenset(SUPPORTED_KEYS) if only is None else frozenset(only)
+    unsupported = requested - SUPPORTED_KEYS
+    if unsupported:
+        raise ValueError(
+            f"Key(s) {sorted(unsupported)!r} are not differentiable. "
+            f"Supported keys: {sorted(SUPPORTED_KEYS)}"
+        )
+
+    if not hasattr(model, "_last_bone_heads") or model._last_bone_heads is None:
+        raise ValueError(
+            "model._last_bone_heads is missing — the model must have been run "
+            "with return_bone_ends=True before calling measure_grad(). "
+            "Use load_anny_from_params() which does this automatically."
+        )
+
+    result = {}
+
+    # Vertex loop indices (cached on model after first call — topology-only)
+    anthro = setup_extended_anthro(model)
+
+    # Detect height axis once under no_grad — returns a Python int, not tracked
+    with torch.no_grad():
+        extents = verts[0].max(dim=0).values - verts[0].min(dim=0).values
+        height_axis = int(extents.argmax().item())
+
+    # ── height_cm ────────────────────────────────────────────────────────────
+    if "height_cm" in requested:
+        col = verts[:, :, height_axis]
+        result["height_cm"] = (col.max() - col.min()) * 100
+
+    # ── waist_cm ─────────────────────────────────────────────────────────────
+    if "waist_cm" in requested:
+        result["waist_cm"] = (
+            compute_loop_circumference(verts, anthro.waist_vertex_indices).squeeze(0) * 100
+        )
+
+    # ── thigh_cm (also required as input for inseam) ─────────────────────────
+    thigh_loop_cm = None
+    if "thigh_cm" in requested or "inseam_cm" in requested:
+        thigh_loop_cm = (
+            compute_loop_circumference(verts, anthro.thigh_vertex_indices).squeeze(0) * 100
+        )
+        if "thigh_cm" in requested:
+            result["thigh_cm"] = thigh_loop_cm
+
+    # ── upperarm_cm (also required as input for sleeve_length) ───────────────
+    upperarm_loop_cm = None
+    if "upperarm_cm" in requested or "sleeve_length_cm" in requested:
+        upperarm_loop_cm = (
+            compute_loop_circumference(verts, anthro.upperarm_vertex_indices).squeeze(0) * 100
+        )
+        if "upperarm_cm" in requested:
+            result["upperarm_cm"] = upperarm_loop_cm
+
+    # ── inseam_cm / sleeve_length_cm (both need differentiable joint tensors) ─
+    if "inseam_cm" in requested or "sleeve_length_cm" in requested:
+        joints_torch = _extract_anny_joints(model, as_tensor=True)
+
+        if "inseam_cm" in requested:
+            # height as Python float — only used for crotch_pct (reporting, not gradient)
+            with torch.no_grad():
+                height_m = float(
+                    (verts[0, :, height_axis].max() - verts[0, :, height_axis].min()).item()
+                )
+            inseam_cm, _, _ = measure_inseam_from_joints(joints_torch, height_m, thigh_loop_cm)
+            result["inseam_cm"] = inseam_cm
+
+        if "sleeve_length_cm" in requested:
+            result["sleeve_length_cm"] = measure_sleeve_length_from_joints(
+                joints_torch, upperarm_loop_cm
+            )
+
+    return result
 
 
 def main():

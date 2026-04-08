@@ -174,8 +174,19 @@ def measure(
     return result
 
 
+def measure_grad(model, verts, only=None):
+    """Differentiable Anny measurements for gradient-based optimisation.
+
+    Thin re-export of :func:`clad_body.measure.anny.measure_grad`.
+    See that function for full documentation, supported keys, and examples.
+    """
+    from clad_body.measure.anny import measure_grad as _mg
+    return _mg(model, verts, only=only)
+
+
 __all__ = [
     "measure",
+    "measure_grad",
     "REGISTRY",
     "MeasurementDef",
     "list_measurements",
