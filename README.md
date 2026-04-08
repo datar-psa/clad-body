@@ -1,22 +1,14 @@
 # clad-body
 
-Body loaders and ISO 8559-1 measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models.
+ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models. Six keys are differentiable through PyTorch autograd for gradient-based body fitting.
 
-Neither Anny nor MHR ship with a measurement library. You get a mesh with 14-18K vertices and no standard way to extract waist circumference from it. This package fills that gap.
+Anny and MHR give you a 14–18K vertex mesh and nothing to measure it with. SMPL tooling doesn't port over, and the plane-sweep algorithms look simple until you hit convex-hull tape simulation, contour-fragment merging, and ISO-compliant landmark detection for bust/hip/crotch. `clad-body` is that work, done once — 25 anthropometric measurements over circumferences, lengths, and body composition (volume, mass, BMI, body fat), calibrated against real scan data. It's used in production at [Clad](https://clad.you) for size-aware virtual try-on.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
   <br>
   <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/4view_male_average.png" alt="Anny body — male average, 4-view with ISO 8559-1 circumference measurements" width="700">
 </p>
-
-## What it does
-
-- **Load** Anny bodies from phenotype params, MHR bodies from SAM 3D Body params
-- **Measure** circumferences (bust, waist, hips, thigh, knee, calf, upper arm, wrist, neck) via ISO 8559-1 plane sweep with convex hull tape-measure simulation
-- **Linear measurements** — shoulder width, sleeve length, inseam, crotch length, shirt length
-- **Body composition** — volume, mass, BMI, body fat estimation
-- **Render** 4-view PNGs with measurement contour overlays
 
 All bodies are normalised to the same coordinate convention: Z-up, metres, XY-centred, feet at Z=0, +Y=front.
 
@@ -60,6 +52,44 @@ body = load_mhr_from_params("path/to/sam3d_params.json")
 m = measure(body)
 ```
 
+### Differentiable path — `measure_grad` (Anny only, experimental)
+
+> **Under active development.** API surface and supported keys may change between minor versions. Six keys are differentiable today; more will follow.
+
+For autograd-based optimization of the body mesh, use `measure_grad(body)` instead of `measure(body)`. Same input, same key names — but the returned values are PyTorch tensors with autograd history, so you can put them directly into a loss and backprop into the Anny phenotype parameters.
+
+Pass `requires_grad=True` to `load_anny_from_params` to create the body with gradient-enabled phenotype tensors (stored on `body.phenotype_kwargs`):
+
+```python
+import torch
+from clad_body.load import load_anny_from_params
+from clad_body.measure import measure_grad
+
+body = load_anny_from_params(initial_params, requires_grad=True)
+optimizer = torch.optim.Adam(list(body.phenotype_kwargs.values()), lr=0.01)
+
+for step in range(500):
+    optimizer.zero_grad()
+    m = measure_grad(body, only=["waist_cm", "inseam_cm"])
+    loss = (m["waist_cm"] - 78.0) ** 2 + (m["inseam_cm"] - 82.0) ** 2
+    loss.backward()
+    optimizer.step()
+```
+
+Each `measure_grad(body)` call re-runs the forward pass using `body.phenotype_kwargs`, so after `optimizer.step()` updates the tensors the next iteration measures the new mesh. If you only want to optimize a subset of parameters, load without `requires_grad=True` and enable it per-tensor: `body.phenotype_kwargs["height"].requires_grad_(True)`.
+
+Supported keys and their calibration error vs the ISO reference that `measure()` uses:
+
+| Key | Error vs ISO |
+|---|---|
+| `height_cm`, `waist_cm` | exact (same loop / extent) |
+| `inseam_cm` | RMS 0.06 cm, max 0.10 cm |
+| `sleeve_length_cm` | RMS 0.33 cm, max 0.55 cm |
+| `upperarm_cm` | ≤ 1 cm |
+| `thigh_cm` | **broken — gradient direction only** (vertex loop under-reports by 3–6 cm; use `measure()` for reporting) |
+
+Requesting any other key raises `ValueError`. There is no silent numpy fallback — it would break gradient flow without warning. For non-differentiable keys use `measure()`.
+
 ## Public API
 
 | Import | What |
@@ -67,7 +97,8 @@ m = measure(body)
 | `clad_body.load.load_anny_from_params` | Load Anny body from phenotype params |
 | `clad_body.load.load_mhr_from_params` | Load MHR body from SAM 3D Body params |
 | `clad_body.load.AnnyBody`, `MhrBody` | Body dataclasses |
-| `clad_body.measure.measure` | Measure a body (one entry point) |
+| `clad_body.measure.measure` | Measure a body (numpy reporting path, ISO 8559-1) |
+| `clad_body.measure.measure_grad` | Differentiable measurements for autograd loops (Anny only) |
 | `clad_body.measure.REGISTRY` | All measurement definitions (`dict[str, MeasurementDef]`) |
 | `clad_body.measure.list_measurements` | Query measurements by tags |
 | `clad_body.measure.MeasurementDef` | Measurement definition type |
@@ -151,12 +182,14 @@ Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). 
 |---|---|---|---|
 | **A** Core torso | height, bust, waist, hip, stomach, underbust, belly_depth | Cheap | -- |
 | **B** Limb sweeps | thigh, knee, calf, upperarm | Expensive | -- |
-| **C** Joint linear | shoulder_width, sleeve_length | Expensive | -- |
+| **C** Joint linear | shoulder_width, sleeve_length (ISO surface walk on re-posed body) | Very expensive | -- |
 | **D** Perpendicular | neck, wrist | Medium | -- |
-| **E** Mesh geometry | inseam, crotch_length, front_rise, back_rise | Medium | -- |
+| **E** Mesh geometry | inseam (mesh sweep), crotch_length, front_rise, back_rise | Medium | -- |
 | **F** Surface trace | shirt_length | Medium | E |
 | **G** Body composition | volume, mass, bmi, body_fat | Cheap | D |
 | **H** Back length | back_neck_to_waist | Cheap | A |
+
+Group C and E have differentiable alternatives in [`measure_grad`](#differentiable-path--measure_grad-anny-only-experimental) — use it for hot-loop optimization instead of calling `measure()` repeatedly.
 
 ## Performance
 

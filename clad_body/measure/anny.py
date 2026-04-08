@@ -1127,64 +1127,83 @@ SUPPORTED_KEYS = frozenset({
 })
 
 
-def measure_grad(model, verts, only=None):
-    """Differentiable Anny measurements for gradient-based optimisation.
+def measure_grad(body, *, pose=None, only=None):
+    """Differentiable Anny measurements for autograd-based mesh optimisation.
 
-    Companion to :func:`clad_body.measure.measure`.  Returns torch scalars with
-    autograd history preserved from the forward pass that produced ``verts``.
-    Designed for hot loops that have live torch state and need measurements as
-    part of a loss function.
+    Runs a fresh forward pass with the body's phenotype kwargs and returns
+    measurements as torch tensors with autograd history preserved.  Gradients
+    flow from the returned tensors back to any tensor in
+    ``body.phenotype_kwargs`` / ``body.local_changes_kwargs`` that has
+    ``requires_grad=True``.
 
-    Only implements measurement keys that have a fully differentiable
-    implementation.  Requesting an unsupported key raises :exc:`ValueError`
-    listing what IS supported.  This is intentional — silent dispatch to a
-    numpy fallback would break gradient flow without warning.
+    Companion to :func:`clad_body.measure.measure`.  Same input (an
+    :class:`~clad_body.load.anny.AnnyBody`) and same key naming — you can swap
+    between the two APIs with no translation.  Only a subset of keys have
+    differentiable implementations; requesting an unsupported key raises
+    :exc:`ValueError` rather than silently falling back to numpy (which would
+    break gradient flow without warning).
 
-    Example (one-liner for tune.py)::
+    Example — optimisation loop::
 
-        m = measure_grad(model, verts, only=["waist_cm", "inseam_cm", "sleeve_length_cm"])
-        loss = (m["waist_cm"] - target_waist) ** 2 + ...
+        from clad_body.load.anny import load_anny_from_params
+        from clad_body.measure import measure_grad
+        import torch
+
+        body = load_anny_from_params(initial_params, requires_grad=True)
+        optimizer = torch.optim.Adam(list(body.phenotype_kwargs.values()), lr=0.01)
+
+        for step in range(500):
+            optimizer.zero_grad()
+            m = measure_grad(body, only=["waist_cm", "inseam_cm"])
+            loss = (m["waist_cm"] - 78.0) ** 2 + (m["inseam_cm"] - 82.0) ** 2
+            loss.backward()
+            optimizer.step()
 
     Args:
-        model: Anny rigged model.  Must have ``_last_bone_heads`` and
-            ``_last_bone_tails`` populated by the same forward pass that
-            produced ``verts``.  :func:`~clad_body.load.anny.load_anny_from_params`
-            and a ``model(..., return_bone_ends=True)`` call both populate
-            these — see :func:`_measure_anny`.
-        verts: ``(1, V, 3)`` torch tensor from ``model(...)["vertices"]``, in
-            the model's native coordinate system (Y-up — same as bone_heads).
-            Must retain its computation graph (do NOT detach) for gradients to
-            flow back to phenotype kwargs.
+        body: :class:`~clad_body.load.anny.AnnyBody` from
+            :func:`~clad_body.load.anny.load_anny_from_params`.  Its
+            ``phenotype_kwargs`` and ``local_changes_kwargs`` are used as the
+            input to a fresh forward pass on ``body.model``.  Pass
+            ``requires_grad=True`` to ``load_anny_from_params`` to enable
+            gradients on all tensors, or call
+            ``body.phenotype_kwargs[label].requires_grad_(True)`` per-tensor.
+        pose: optional ``(1, n_joints, 4, 4)`` pose tensor.  Defaults to Anny
+            A-pose via :func:`~clad_body.load.anny.build_anny_apose`.
         only: list of measurement keys to compute.  ``None`` means all
-            supported keys.  Order does not matter.
+            supported keys.
 
     Returns:
         dict mapping measurement key → 0-dim torch tensor (cm) with autograd
-        history preserved.  Same key naming as :func:`~clad_body.measure.measure`
-        — e.g. ``"inseam_cm"``, ``"sleeve_length_cm"`` — so callers can swap
-        between the two APIs with no key translation.
+        history preserved.
 
     Raises:
-        ValueError: if ``only`` contains a key not in :data:`SUPPORTED_KEYS`, or
-            if ``model._last_bone_heads`` / ``_last_bone_tails`` are missing.
+        ValueError: if ``only`` contains a key not in :data:`SUPPORTED_KEYS`,
+            or if ``body.phenotype_kwargs`` is missing (body wasn't created
+            via :func:`load_anny_from_params`).
 
     Supported keys (Anny):
-        - ``height_cm``        — ``verts[:, :, height_axis].max() - .min()``
-        - ``waist_cm``         — vertex-loop circumference (waist loop)
-        - ``thigh_cm``         — vertex-loop circumference (thigh loop)
-        - ``upperarm_cm``      — vertex-loop circumference (upperarm loop)
-        - ``inseam_cm``        — :func:`~clad_body.measure._lengths.measure_inseam_from_joints`
-        - ``sleeve_length_cm`` — :func:`~clad_body.measure._lengths.measure_sleeve_length_from_joints`
+        ``height_cm``, ``waist_cm``, ``thigh_cm``, ``upperarm_cm``,
+        ``inseam_cm``, ``sleeve_length_cm``.
 
     Note:
-        MHR support is out of scope for v1 — Anny only.  A parallel
-        ``_measure_mhr_grad`` will be needed when MHR gradient tuning is
-        required.
-
-        ``measure()`` remains the reporting / JSON-safe API.  Use
-        ``measure_grad()`` only inside autograd loops where you already have
-        live torch tensors.
+        MHR is not yet supported.  API and supported keys may change between
+        minor versions while this is under active development.
     """
+    from clad_body.load.anny import AnnyBody, build_anny_apose
+
+    if not isinstance(body, AnnyBody):
+        raise TypeError(
+            f"measure_grad expects an AnnyBody, got {type(body).__name__}"
+        )
+
+    if body.phenotype_kwargs is None:
+        raise ValueError(
+            "body.phenotype_kwargs is missing — create the body via "
+            "load_anny_from_params() so the torch tensors needed for "
+            "measure_grad() are populated."
+        )
+
+    # Validate keys before paying for the forward pass
     requested = frozenset(SUPPORTED_KEYS) if only is None else frozenset(only)
     unsupported = requested - SUPPORTED_KEYS
     if unsupported:
@@ -1193,13 +1212,33 @@ def measure_grad(model, verts, only=None):
             f"Supported keys: {sorted(SUPPORTED_KEYS)}"
         )
 
-    if not hasattr(model, "_last_bone_heads") or model._last_bone_heads is None:
-        raise ValueError(
-            "model._last_bone_heads is missing — the model must have been run "
-            "with return_bone_ends=True before calling measure_grad(). "
-            "Use load_anny_from_params() which does this automatically."
-        )
+    model = body.model
+    device = next(iter(body.phenotype_kwargs.values())).device
 
+    if pose is None:
+        pose = build_anny_apose(model, device)
+
+    # Forward pass — keep the computation graph (no torch.no_grad)
+    output = model(
+        pose_parameters=pose,
+        phenotype_kwargs=body.phenotype_kwargs,
+        local_changes_kwargs=body.local_changes_kwargs or {},
+        pose_parameterization="root_relative_world",
+        return_bone_ends=True,
+    )
+    model._last_bone_heads = output["bone_heads"]
+    model._last_bone_tails = output["bone_tails"]
+
+    return _measure_grad_from_verts(model, output["vertices"], requested=requested)
+
+
+def _measure_grad_from_verts(model, verts, *, requested):
+    """Compute differentiable measurements from a verts tensor.
+
+    Internal — assumes ``model._last_bone_heads`` and ``_last_bone_tails`` are
+    already populated by the caller (typically :func:`measure_grad` itself),
+    and that ``requested`` is a validated frozenset of keys.
+    """
     result = {}
 
     # Vertex loop indices (cached on model after first call — topology-only)

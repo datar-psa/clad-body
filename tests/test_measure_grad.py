@@ -1,13 +1,13 @@
 """Tests for measure_grad — differentiable Anny body measurements.
 
 Verifies:
-  1. Forward equivalence: measure_grad values match measure() to within 0.05 cm
+  1. Forward equivalence: measure_grad values match measure() within tolerance
      on all 6 testdata bodies.
   2. Gradient flow: loss.backward() produces non-zero .grad on phenotype tensors.
   3. ``only=`` filtering: returns exactly the requested keys.
   4. Error on unsupported key.
-  5. Error on missing bone state.
-  6. No spurious UserWarning during calibration calls.
+  5. Error when phenotype_kwargs are missing on the body.
+  6. No spurious UserWarning from clad_body during the measurement call.
 
 Run:
     pytest tests/test_measure_grad.py -v
@@ -17,9 +17,8 @@ import os
 import warnings
 
 import pytest
-import torch
 
-from clad_body.load.anny import build_anny_apose, load_anny_from_params
+from clad_body.load.anny import AnnyBody, load_anny_from_params
 from clad_body.measure import measure
 from clad_body.measure.anny import SUPPORTED_KEYS, load_phenotype_params, measure_grad
 
@@ -36,7 +35,7 @@ ALL_SUBJECTS = [
     "female_plus_size",
 ]
 
-# Tight tolerance for joint-based and waist/height keys — same code path, float32 drift only.
+# Tight tolerance for the keys that share a code path with measure() — float32 drift only.
 TOLERANCE_CM = 0.05
 
 # thigh_cm uses BASE_MESH_THIGH_VERTICES which is a known-broken vertex loop that
@@ -55,7 +54,6 @@ TOLERANCE_INSEAM_CM = 0.15
 # against measure_sleeve_length_iso_reference that measure() now uses.  Max error: 0.55 cm.
 TOLERANCE_SLEEVE_CM = 0.65
 
-# Per-key tolerance overrides (keys absent from this dict use TOLERANCE_CM).
 _KEY_TOLERANCE = {
     "thigh_cm": TOLERANCE_THIGH_CM,
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
@@ -64,89 +62,10 @@ _KEY_TOLERANCE = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _load_body_and_verts(name):
-    """Return (body, model, verts_raw) for a testdata subject.
-
-    ``verts_raw`` is the raw (1, V, 3) Y-up tensor from the model forward pass,
-    with the computation graph intact so measure_grad can compute gradients.
-    The model's _last_bone_heads / _last_bone_tails are updated to match this
-    forward pass.
-    """
+def _load(name, *, requires_grad=False):
+    """Load a testdata body."""
     params = load_phenotype_params(os.path.join(TESTDATA_DIR, name, "anny_params.json"))
-    body = load_anny_from_params(params)
-    model = body.model
-
-    # Build phenotype kwargs (no requires_grad here — equivalence test only)
-    phenotype_kwargs = {}
-    for label in model.phenotype_labels:
-        if label in params:
-            phenotype_kwargs[label] = torch.tensor(
-                [params[label]], dtype=torch.float32
-            )
-
-    local_changes = params.get("_local_changes", {})
-    local_kwargs = {
-        label: torch.tensor([v], dtype=torch.float32)
-        for label, v in local_changes.items()
-    }
-
-    a_pose = build_anny_apose(model, torch.device("cpu"))
-
-    # Fresh forward pass WITH gradient graph (no torch.no_grad)
-    output = model(
-        pose_parameters=a_pose,
-        phenotype_kwargs=phenotype_kwargs,
-        local_changes_kwargs=local_kwargs,
-        pose_parameterization="root_relative_world",
-        return_bone_ends=True,
-    )
-
-    # Update bone state so _extract_anny_joints(as_tensor=True) sees live data
-    model._last_bone_heads = output.get("bone_heads")
-    model._last_bone_tails = output.get("bone_tails")
-
-    return body, model, output["vertices"]
-
-
-def _load_body_with_grad_params(name):
-    """Return (model, verts, phenotype_kwargs) where all phenotype tensors have
-    requires_grad=True so loss.backward() can produce non-zero .grad values.
-    """
-    params = load_phenotype_params(os.path.join(TESTDATA_DIR, name, "anny_params.json"))
-    body = load_anny_from_params(params)
-    model = body.model
-
-    phenotype_kwargs = {}
-    for label in model.phenotype_labels:
-        if label in params:
-            phenotype_kwargs[label] = torch.tensor(
-                [params[label]], dtype=torch.float32, requires_grad=True
-            )
-
-    local_changes = params.get("_local_changes", {})
-    local_kwargs = {
-        label: torch.tensor([v], dtype=torch.float32, requires_grad=True)
-        for label, v in local_changes.items()
-    }
-
-    a_pose = build_anny_apose(model, torch.device("cpu"))
-
-    output = model(
-        pose_parameters=a_pose,
-        phenotype_kwargs=phenotype_kwargs,
-        local_changes_kwargs=local_kwargs,
-        pose_parameterization="root_relative_world",
-        return_bone_ends=True,
-    )
-
-    model._last_bone_heads = output.get("bone_heads")
-    model._last_bone_tails = output.get("bone_tails")
-
-    return model, output["vertices"], phenotype_kwargs
+    return load_anny_from_params(params, requires_grad=requires_grad)
 
 
 # ---------------------------------------------------------------------------
@@ -155,14 +74,11 @@ def _load_body_with_grad_params(name):
 
 @pytest.mark.parametrize("name", ALL_SUBJECTS)
 def test_forward_equivalence(name):
-    """measure_grad values match measure() to within TOLERANCE_CM on all subjects."""
-    body, model, verts_raw = _load_body_and_verts(name)
+    """measure_grad values match measure() within tolerance on all subjects."""
+    body = _load(name)
 
-    # Reference via numpy reporting path
     m_ref = measure(body, only=list(SUPPORTED_KEYS))
-
-    # Differentiable path
-    m_grad = measure_grad(model, verts_raw)
+    m_grad = measure_grad(body)
 
     errors = {}
     for key in SUPPORTED_KEYS:
@@ -190,23 +106,20 @@ def test_forward_equivalence(name):
 
 def test_gradient_flow():
     """loss.backward() produces non-zero .grad on at least one phenotype tensor."""
-    model, verts, phenotype_kwargs = _load_body_with_grad_params("male_average")
+    body = _load("male_average", requires_grad=True)
 
-    m = measure_grad(model, verts, only=["sleeve_length_cm", "inseam_cm", "waist_cm"])
+    m = measure_grad(body, only=["sleeve_length_cm", "inseam_cm", "waist_cm"])
     loss = m["sleeve_length_cm"] + m["inseam_cm"] + m["waist_cm"]
     loss.backward()
 
-    all_grads = {
+    non_zero = {
         label: t.grad
-        for label, t in phenotype_kwargs.items()
-        if t.grad is not None
+        for label, t in body.phenotype_kwargs.items()
+        if t.grad is not None and t.grad.abs().sum().item() > 0
     }
-    non_zero = {k: v for k, v in all_grads.items() if v.abs().sum().item() > 0}
-
     assert non_zero, (
-        "No non-zero gradients found on any phenotype tensor after loss.backward(). "
-        f"Phenotype labels: {list(phenotype_kwargs.keys())}. "
-        "Check that the forward pass is not wrapped in torch.no_grad()."
+        "No non-zero gradients on any phenotype tensor after loss.backward(). "
+        f"Labels: {list(body.phenotype_kwargs.keys())}"
     )
 
 
@@ -216,65 +129,64 @@ def test_gradient_flow():
 
 def test_only_single_key():
     """only=['inseam_cm'] returns exactly one key."""
-    body, model, verts_raw = _load_body_and_verts("female_average")
-    result = measure_grad(model, verts_raw, only=["inseam_cm"])
-    assert set(result.keys()) == {"inseam_cm"}, (
-        f"Expected exactly {{'inseam_cm'}}, got {set(result.keys())}"
-    )
+    body = _load("female_average")
+    result = measure_grad(body, only=["inseam_cm"])
+    assert set(result.keys()) == {"inseam_cm"}
 
 
 def test_only_none_returns_all_supported():
     """only=None returns all SUPPORTED_KEYS."""
-    body, model, verts_raw = _load_body_and_verts("female_average")
-    result = measure_grad(model, verts_raw, only=None)
+    body = _load("female_average")
+    result = measure_grad(body, only=None)
     assert set(result.keys()) == SUPPORTED_KEYS
 
 
 def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
-    body, model, verts_raw = _load_body_and_verts("female_average")
+    body = _load("female_average")
     with pytest.raises(ValueError) as exc_info:
-        measure_grad(model, verts_raw, only=["bust_cm"])
+        measure_grad(body, only=["bust_cm"])
     msg = str(exc_info.value)
     assert "bust_cm" in msg
-    # Error message must list supported keys so caller knows what's available
     for key in SUPPORTED_KEYS:
         assert key in msg, f"SUPPORTED_KEYS entry '{key}' missing from error message"
 
 
 # ---------------------------------------------------------------------------
-# 4. Missing bone state
+# 4. Missing phenotype_kwargs
 # ---------------------------------------------------------------------------
 
-def test_missing_bone_state_raises():
-    """Calling measure_grad after del model._last_bone_heads raises ValueError."""
-    body, model, verts_raw = _load_body_and_verts("male_average")
-    del model._last_bone_heads
-    with pytest.raises(ValueError, match="_last_bone_heads"):
-        measure_grad(model, verts_raw)
+def test_missing_phenotype_kwargs_raises():
+    """A body without phenotype_kwargs (e.g. hand-built) raises ValueError."""
+    import numpy as np
+    body = AnnyBody(
+        vertices=np.zeros((10, 3), dtype=np.float32),
+        faces=np.zeros((1, 3), dtype=np.int32),
+        source="test",
+    )
+    with pytest.raises(ValueError, match="phenotype_kwargs"):
+        measure_grad(body)
 
 
 # ---------------------------------------------------------------------------
-# 5. No spurious warnings
+# 5. No spurious warnings from clad_body
 # ---------------------------------------------------------------------------
 
 def test_no_warnings():
-    """measure_grad must not emit tensor-to-scalar coercion warnings.
+    """measure_grad must not emit warnings from clad_body itself.
 
     The Anny library emits a UserWarning about LBS skinning fallback (no NVidia Warp
-    installed) — that's expected infrastructure noise, not our code. We specifically
-    check that OUR code doesn't produce implicit tensor-to-scalar conversion warnings,
-    which would indicate a broken gradient path.
+    installed) — expected infrastructure noise. We check that OUR code path doesn't
+    produce warnings that would indicate a broken gradient flow.
     """
-    body, model, verts_raw = _load_body_and_verts("female_slim")
+    body = _load("female_slim")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        measure_grad(model, verts_raw)
+        measure_grad(body)
 
     our_warnings = [
         w for w in caught
-        if issubclass(w.category, UserWarning)
-        and "clad_body" in str(w.filename)
+        if issubclass(w.category, UserWarning) and "clad_body" in str(w.filename)
     ]
     assert not our_warnings, (
         "measure_grad emitted unexpected UserWarning(s) from clad_body:\n"

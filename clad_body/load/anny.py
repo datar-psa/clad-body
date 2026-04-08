@@ -74,6 +74,14 @@ class AnnyBody:
     # XY centering offset (for aligning bone/joint positions to the mesh).
     _xy_offset: Optional[np.ndarray] = field(default=None, repr=False)
 
+    # Torch tensors mirroring phenotype_params + _local_changes, created by
+    # load_anny_from_params so measure_grad() can re-run the forward pass with
+    # gradients.  For autograd optimisation, call .requires_grad_(True) on the
+    # tensors you want to optimise (or pass requires_grad=True to
+    # load_anny_from_params to enable it on all of them).
+    phenotype_kwargs: Optional[dict] = field(default=None, repr=False)
+    local_changes_kwargs: Optional[dict] = field(default=None, repr=False)
+
     def __hash__(self):
         return id(self)
 
@@ -301,6 +309,8 @@ def load_anny_from_arrays(
 def load_anny_from_params(
     params: dict,
     device: str = "cpu",
+    *,
+    requires_grad: bool = False,
 ) -> AnnyBody:
     """Generate Anny body from phenotype params dict.
 
@@ -316,9 +326,16 @@ def load_anny_from_params(
                 ``weight``, etc.  All values in [0, 1].  May include
                 ``_local_changes`` sub-dict for shape blendshapes.
         device: ``"cpu"`` or ``"cuda"``.
+        requires_grad: If ``True``, all phenotype and local-change tensors on
+                the returned body are created with ``requires_grad=True`` so
+                :func:`clad_body.measure.measure_grad` can backprop into them.
+                Default ``False`` — enable per-tensor via
+                ``body.phenotype_kwargs[label].requires_grad_(True)`` if you
+                only want gradients on a subset.
 
     Returns:
-        :class:`AnnyBody` with ``_model`` and ``_xy_offset`` populated.
+        :class:`AnnyBody` with ``_model``, ``_xy_offset``, ``phenotype_kwargs``
+        and ``local_changes_kwargs`` populated.
 
     Performance:
         This is the recommended entry point.  The body carries its own
@@ -341,12 +358,13 @@ def load_anny_from_params(
         local_changes=local_change_labels,
     ).to(dtype=torch.float32, device=device)
 
-    # Phenotype kwargs
+    # Phenotype kwargs (stored on body for measure_grad to reuse)
     phenotype_kwargs = {}
     for label in model.phenotype_labels:
         if label in params:
             phenotype_kwargs[label] = torch.tensor(
                 [params[label]], dtype=torch.float32, device=device,
+                requires_grad=requires_grad,
             )
 
     # Local changes kwargs
@@ -354,6 +372,7 @@ def load_anny_from_params(
     for label, value in local_changes.items():
         local_kwargs[label] = torch.tensor(
             [value], dtype=torch.float32, device=device,
+            requires_grad=requires_grad,
         )
 
     a_pose = build_anny_apose(model, device)
@@ -399,6 +418,8 @@ def load_anny_from_params(
         faces=faces_np,
         source="params",
         phenotype_params=dict(params),  # full copy including _local_changes
+        phenotype_kwargs=phenotype_kwargs,
+        local_changes_kwargs=local_kwargs,
         _model=model,
         _xy_offset=xy_offset.astype(np.float32),
     )
