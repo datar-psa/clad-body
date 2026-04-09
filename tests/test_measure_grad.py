@@ -20,7 +20,12 @@ import pytest
 
 from clad_body.load.anny import AnnyBody, load_anny_from_params
 from clad_body.measure import measure
-from clad_body.measure.anny import SUPPORTED_KEYS, load_phenotype_params, measure_grad
+from clad_body.measure.anny import (
+    SUPPORTED_KEYS,
+    _MEDIAN_DENSITY,
+    load_phenotype_params,
+    measure_grad,
+)
 
 TESTDATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "clad_body", "measure", "testdata", "anny"
@@ -46,19 +51,30 @@ TOLERANCE_THIGH_CM = 10.0
 # upperarm_cm vertex loop is reasonable as a proxy but not ISO-accurate; allow < 1.5 cm.
 TOLERANCE_UPPERARM_CM = 1.5
 
-# inseam_cm in measure_grad uses the joint-based approximation calibrated against
-# the mesh-sweep ISO method that measure() now uses.  Max calibration error: 0.10 cm.
-TOLERANCE_INSEAM_CM = 0.15
+# inseam_cm in measure_grad reads a curated Anny perineum vertex pair (6319/12900)
+# whose Z directly tracks the ISO mesh-sweep crotch.  Empirical max error vs the
+# mesh sweep across a 118-case stress matrix (testdata + leg-length blendshape
+# sweeps + questionnaire grid + random local_changes): 0.187 cm.
+TOLERANCE_INSEAM_CM = 0.20
 
 # sleeve_length_cm in measure_grad uses the joint-chain approximation calibrated
 # against measure_sleeve_length_iso_reference that measure() now uses.  Max error: 0.55 cm.
 TOLERANCE_SLEEVE_CM = 0.65
+
+# mass_kg in measure_grad uses V × _MEDIAN_DENSITY[gender] (no BF correction).
+# measure() uses V × BF-corrected density (Navy/Weltman → Siri equation).  The
+# two diverge most for plus-size bodies (high BF lowers density below the
+# population median).  Empirically observed max on testdata: 2.98 kg
+# (female_plus_size).  The strict V × _MEDIAN_DENSITY[gender] identity is
+# checked separately in test_mass_kg_matches_volume_times_median_density.
+TOLERANCE_MASS_KG = 3.1
 
 _KEY_TOLERANCE = {
     "thigh_cm": TOLERANCE_THIGH_CM,
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
     "inseam_cm": TOLERANCE_INSEAM_CM,
     "sleeve_length_cm": TOLERANCE_SLEEVE_CM,
+    "mass_kg": TOLERANCE_MASS_KG,
 }
 
 
@@ -101,6 +117,70 @@ def test_forward_equivalence(name):
 
 
 # ---------------------------------------------------------------------------
+# 1a. inseam_cm regression — leg-length blendshape must not break tracking
+# ---------------------------------------------------------------------------
+#
+# Pins the fix for the bone-tail formula drift bug. The earlier
+# bone-tail-plus-linear-correction `measure_inseam_from_joints` calibrated on
+# the 6 testdata bodies at native shape, and broke catastrophically (>10 cm
+# error) when `measure-{upper,lower}leg-height-incr` was pushed away from
+# zero — those blendshapes were added to BODY_LOCAL_CHANGES for length tuning
+# (see body-tuning/measurements_tuning/findings/anny_length_levers.md), but
+# the formula's calibration set never spanned them.  The vertex-pair
+# replacement reads the perineum directly so it can't drift like that.
+
+@pytest.mark.parametrize(
+    "delta", [0.0, 0.5, 1.0],
+    ids=["leg+0.0", "leg+0.5", "leg+1.0"],
+)
+def test_inseam_tracks_mesh_sweep_under_leg_length_blendshape(delta):
+    """measure_grad['inseam_cm'] must track measure()['inseam_cm'] across the
+    full range of the `measure-{upper,lower}leg-height-incr` blendshapes."""
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "male_average", "anny_params.json")
+    )
+    lc = dict(params.get("_local_changes", {}))
+    lc["measure-upperleg-height-incr"] = delta
+    lc["measure-lowerleg-height-incr"] = delta
+    params["_local_changes"] = lc
+    body = load_anny_from_params(params)
+
+    ref = measure(body, only=["inseam_cm"])["inseam_cm"]
+    grad = measure_grad(body, only=["inseam_cm"])["inseam_cm"].item()
+
+    err = abs(grad - ref)
+    assert err < TOLERANCE_INSEAM_CM, (
+        f"leg-length δ={delta:+.1f}: grad={grad:.3f} ref={ref:.3f} "
+        f"err={err:.3f} cm > tol={TOLERANCE_INSEAM_CM} cm"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1b. mass_kg identity — must match V × _MEDIAN_DENSITY[gender] exactly
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ALL_SUBJECTS)
+def test_mass_kg_matches_volume_times_median_density(name):
+    """measure_grad['mass_kg'] == measure()['volume_m3'] * _MEDIAN_DENSITY[gender].
+
+    The cross-API equivalence test (test_forward_equivalence) compares against
+    measure()'s BF-corrected mass with a generous tolerance.  This test pins
+    the actual measure_grad formula: simple V × constant per gender.
+    """
+    body = _load(name)
+    m_ref = measure(body, only=["volume_m3"])
+    m_grad = measure_grad(body, only=["mass_kg"])
+
+    gender_str = "female" if "female" in name else "male"
+    expected = m_ref["volume_m3"] * _MEDIAN_DENSITY[gender_str]
+    got = m_grad["mass_kg"].item()
+
+    assert abs(got - expected) < 0.01, (
+        f"{name}: mass_kg={got:.4f}, expected V×ρ={expected:.4f}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 2. Gradient flow
 # ---------------------------------------------------------------------------
 
@@ -108,8 +188,8 @@ def test_gradient_flow():
     """loss.backward() produces non-zero .grad on at least one phenotype tensor."""
     body = _load("male_average", requires_grad=True)
 
-    m = measure_grad(body, only=["sleeve_length_cm", "inseam_cm", "waist_cm"])
-    loss = m["sleeve_length_cm"] + m["inseam_cm"] + m["waist_cm"]
+    m = measure_grad(body, only=["sleeve_length_cm", "inseam_cm", "waist_cm", "mass_kg"])
+    loss = m["sleeve_length_cm"] + m["inseam_cm"] + m["waist_cm"] + m["mass_kg"]
     loss.backward()
 
     non_zero = {

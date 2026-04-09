@@ -357,8 +357,7 @@ def measure_sleeve_length_from_joints(joints, upperarm_loop_cm):
     differentiable.
 
     This function is the FAST DIFFERENTIABLE APPROXIMATION calibrated
-    against that reference. Same architectural pattern as
-    measure_inseam_from_joints:
+    against that reference:
 
         sleeve_iso_cm ≈ bone_chain_cm + a*upperarm_loop_cm + bias
 
@@ -644,64 +643,68 @@ def measure_back_neck_to_waist(joints, mesh, waist_z, step=0.005, c7_surface=Non
     return total_cm, pts.astype(np.float32)
 
 
-def measure_inseam_from_joints(joints, height, thigh_loop_cm):
-    """Measure inseam from hip joints + soft-tissue correction — differentiable through LBS.
+# Anny perineum vertex pair — left/right symmetric, ~8 mm off the body
+# centerline at the inguinal surface. Their height-from-floor tracks the
+# ISO 8559-1 mesh-sweep crotch directly because they ARE the perineum
+# surface, not a kinematic proxy. Stable across the parameter space:
+# 118-case stress test (6 testdata bodies + 90 questionnaire grid + 12
+# leg-length blendshape sweeps + 10 random local_changes perturbations)
+# scored max 0.19 cm error, RMS 0.09 cm.
+ANNY_PERINEUM_VERTEX_L = 6319
+ANNY_PERINEUM_VERTEX_R = 12900
 
-    The bone tail of upperleg01 is the hip articulation point (lesser
-    trochanter level), which sits ABOVE the actual perineum where the legs
-    meet. The gap depends on inner-thigh thickness: slim builds → ~0 gap,
-    muscular/wide-pelvis builds → up to ~2 cm gap.
 
-    We approximate the perineum with a linear correction:
+def measure_inseam_from_perineum_vertices(verts, height_axis):
+    """ISO 8559-1 §5.1.15 inseam — height of the perineum vertex pair above the floor.
 
-        crotch_z ≈ hip_tail_z + (a*thigh + b*pelvis_w + c) / 100
+    Reads two stable Anny vertex indices on the inguinal surface (a left/right
+    symmetric pair, ~8 mm off the body centerline). Differentiable through
+    LBS+blendshapes by construction — the vertices ARE soft tissue, so any
+    blendshape that moves the perineum moves them.
 
-    where ``pelvis_w`` is the inter-femoral X distance (from bone positions)
-    and ``thigh`` is the vertex-loop thigh circumference.  Both inputs
-    flow through Anny's LBS skinning and blendshapes, so the result stays
-    fully differentiable end-to-end.
+    This replaced an older bone-tail-plus-linear-correction formula
+    (``upperleg01.tail.z + a*thigh + b*pelvis_w + c``) that drifted
+    catastrophically (>10 cm) on bodies whose ``measure-{upper,lower}leg-
+    height-incr`` blendshapes were pushed away from zero — the femur tail
+    moved at only ~70 % the rate of the mesh perineum, and the calibration
+    set never spanned the questionnaire body distribution. See
+    ``findings/measure_inseam_from_joints_drift.md``.
 
-    Calibration: 3-param least-squares on the 6 testdata bodies
-    (slim/average/curvy/plus-size × M/F).  RMS=0.06 cm, max=0.10 cm vs
-    ISO 8559-1 mesh-sweep crotch.
+    Validation: 118 stress-test bodies (testdata × leg-length blendshape
+    sweeps + questionnaire grid + random local_changes) → max error
+    0.19 cm vs the ISO mesh sweep, RMS 0.09 cm.
 
-    The arithmetic is type-polymorphic — pass numpy arrays for reporting,
-    torch tensors for gradient-based optimization.
-
-    ISO 8559-1 5.1.15: vertical distance from crotch to floor.
+    Type-polymorphic — accepts a numpy array for reporting or a torch
+    tensor for the gradient hot loop. Returns ``inseam_cm`` in the same
+    type as ``verts``.
 
     Args:
-        joints:        dict with 'l_hip' and 'r_hip' as (3,) arrays/tensors
-                       (Z-up, metres). These are upperleg01 bone TAILS.
-        height:        body height in metres (for crotch_pct).
-        thigh_loop_cm: vertex-loop thigh circumference in cm
-                       (e.g. ``compute_loop_circumference(verts, anthro.thigh_vertex_indices)*100``).
+        verts: ``(V, 3)`` or ``(1, V, 3)`` array/tensor of vertex positions
+            in the raw Anny model frame (no XY-centering or floor alignment
+            required — only Z-from-floor matters and is computed here).
+        height_axis: ``1`` if Anny is in Y-up convention (vertical = old Y,
+            with feet at max Y — same logic as ``_extract_anny_joints`` and
+            ``load_anny_from_params``); ``2`` if already Z-up.
 
     Returns:
-        (inseam_cm, crotch_z, crotch_pct) or (0, 0, 0) if joints unavailable.
+        ``inseam_cm`` — type-polymorphic scalar (preserves torch grad).
     """
-    l_hip = joints.get("l_hip")
-    r_hip = joints.get("r_hip")
-    if l_hip is None or r_hip is None:
-        return 0, 0, 0
+    if verts.ndim == 3:
+        verts = verts[0]
 
-    hip_z = (l_hip[2] + r_hip[2]) / 2
-    pelvis_w_cm = abs(l_hip[0] - r_hip[0]) * 100
-
-    # Empirical fit (n=6, RMS=0.06 cm, max=0.10 cm).
-    A_THIGH, A_PELV, A_BIAS = -0.01478, -0.45810, 9.32631
-    offset_cm = A_THIGH * thigh_loop_cm + A_PELV * pelvis_w_cm + A_BIAS
-
-    crotch_z = hip_z + offset_cm / 100
-    # inseam_cm is the only return value that flows through gradient hot loops;
-    # preserve tensor type-polymorphism. The other two (crotch_z, crotch_pct)
-    # feed numpy mesh-sweep callers downstream, so they stay as Python floats.
-    inseam_cm = crotch_z * 100
-    crotch_z_scalar = (
-        crotch_z.detach().item() if hasattr(crotch_z, "detach") else float(crotch_z)
-    )
-    crotch_pct = (crotch_z_scalar / height * 100) if height > 0 else 0
-    return inseam_cm, crotch_z_scalar, crotch_pct
+    # Project to 1D height-from-floor. Mirrors the Y-up→Z-up convention
+    # used by load_anny_from_params and _extract_anny_joints: in the Y-up
+    # frame, vertical = -Y (so feet at max Y become min "z"), and the
+    # absolute height-from-floor is obtained by subtracting the new min.
+    if height_axis == 1:  # Y-up
+        v_z = -verts[:, 1]
+    else:  # Z-up (Anny's current default)
+        v_z = verts[:, 2]
+    floor = v_z.min()
+    z_l = v_z[ANNY_PERINEUM_VERTEX_L] - floor
+    z_r = v_z[ANNY_PERINEUM_VERTEX_R] - floor
+    crotch_z_m = (z_l + z_r) / 2
+    return crotch_z_m * 100
 
 
 def measure_inseam(mesh, height, step=0.002):

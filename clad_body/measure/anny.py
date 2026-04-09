@@ -49,7 +49,7 @@ from clad_body.measure._lengths import (
     measure_back_neck_to_waist,
     measure_crotch_length,
     measure_inseam,
-    measure_inseam_from_joints,
+    measure_inseam_from_perineum_vertices,
     measure_shirt_length,
     measure_shoulder_width,
     measure_sleeve_length,
@@ -293,7 +293,7 @@ def find_acromion(verts, shoulder_joint, side="left"):
 # This is the SLOW REFERENCE function used to calibrate the differentiable
 # runtime function `measure_sleeve_length_from_joints` in _lengths.py.
 #
-# Architecture (mirrors `measure_inseam` / `measure_inseam_from_joints`):
+# Architecture (mirrors `measure_inseam` / `measure_inseam_from_perineum_vertices`):
 #   - measure_sleeve_length_iso_reference (this file): non-differentiable,
 #     poses the body in rest pose with natural ~42° elbow flex, detects
 #     acromion / olecranon / wrist styloid via skinning weights and bone
@@ -1010,8 +1010,8 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
     if GROUP_E in groups:
         # Reporting path: ISO 8559-1 mesh sweep (accurate, non-differentiable).
         # For gradient-based optimisation use measure_grad() which calls
-        # measure_inseam_from_joints() — a differentiable approximation calibrated
-        # against this sweep.
+        # measure_inseam_from_perineum_vertices() — a differentiable vertex-pair
+        # proxy that tracks this sweep within ~0.2 cm.
         inseam_cm, inseam_z, inseam_pct = measure_inseam(mesh_tri, height)
         measurements["inseam_cm"] = inseam_cm
         measurements["_inseam_z"] = inseam_z
@@ -1114,7 +1114,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
 
 # ── Differentiable measurements ───────────────────────────────────────────────
 
-#: Keys supported by :func:`measure_grad`.  All six have fully differentiable
+#: Keys supported by :func:`measure_grad`.  All have fully differentiable
 #: implementations that compose existing building blocks.  Callers can inspect
 #: this set to check support before requesting a key.
 SUPPORTED_KEYS = frozenset({
@@ -1124,6 +1124,7 @@ SUPPORTED_KEYS = frozenset({
     "upperarm_cm",
     "inseam_cm",
     "sleeve_length_cm",
+    "mass_kg",
 })
 
 
@@ -1183,7 +1184,20 @@ def measure_grad(body, *, pose=None, only=None):
 
     Supported keys (Anny):
         ``height_cm``, ``waist_cm``, ``thigh_cm``, ``upperarm_cm``,
-        ``inseam_cm``, ``sleeve_length_cm``.
+        ``inseam_cm``, ``sleeve_length_cm``, ``mass_kg``.
+
+    Note on mass_kg:
+        Computed as ``volume(verts) × _MEDIAN_DENSITY[gender]`` where
+        ``_MEDIAN_DENSITY = {"male": 1059, "female": 1031}`` (kg/m³,
+        population-median tissue density from hydrostatic weighing).
+        This is intentionally simpler than the value returned by
+        :func:`measure`, which uses a body-fat-corrected density derived
+        from neck/waist/hip/height (non-differentiable).  The trade-off:
+        ``measure_grad`` mass cannot reflect body composition variance
+        within a gender, but it stays differentiable end-to-end and
+        tracks real human mass at the population median (within ~2 kg
+        for normal-composition adults).  ``measure`` remains the more
+        accurate static reporting value.
 
     Note:
         MHR is not yet supported.  API and supported keys may change between
@@ -1260,14 +1274,11 @@ def _measure_grad_from_verts(model, verts, *, requested):
             compute_loop_circumference(verts, anthro.waist_vertex_indices).squeeze(0) * 100
         )
 
-    # ── thigh_cm (also required as input for inseam) ─────────────────────────
-    thigh_loop_cm = None
-    if "thigh_cm" in requested or "inseam_cm" in requested:
-        thigh_loop_cm = (
+    # ── thigh_cm ─────────────────────────────────────────────────────────────
+    if "thigh_cm" in requested:
+        result["thigh_cm"] = (
             compute_loop_circumference(verts, anthro.thigh_vertex_indices).squeeze(0) * 100
         )
-        if "thigh_cm" in requested:
-            result["thigh_cm"] = thigh_loop_cm
 
     # ── upperarm_cm (also required as input for sleeve_length) ───────────────
     upperarm_loop_cm = None
@@ -1278,23 +1289,26 @@ def _measure_grad_from_verts(model, verts, *, requested):
         if "upperarm_cm" in requested:
             result["upperarm_cm"] = upperarm_loop_cm
 
-    # ── inseam_cm / sleeve_length_cm (both need differentiable joint tensors) ─
-    if "inseam_cm" in requested or "sleeve_length_cm" in requested:
+    # ── inseam_cm — perineum vertex pair (no joints needed) ──────────────────
+    if "inseam_cm" in requested:
+        result["inseam_cm"] = measure_inseam_from_perineum_vertices(verts, height_axis)
+
+    # ── sleeve_length_cm (needs differentiable joint tensors) ────────────────
+    if "sleeve_length_cm" in requested:
         joints_torch = _extract_anny_joints(model, as_tensor=True)
+        result["sleeve_length_cm"] = measure_sleeve_length_from_joints(
+            joints_torch, upperarm_loop_cm
+        )
 
-        if "inseam_cm" in requested:
-            # height as Python float — only used for crotch_pct (reporting, not gradient)
-            with torch.no_grad():
-                height_m = float(
-                    (verts[0, :, height_axis].max() - verts[0, :, height_axis].min()).item()
-                )
-            inseam_cm, _, _ = measure_inseam_from_joints(joints_torch, height_m, thigh_loop_cm)
-            result["inseam_cm"] = inseam_cm
-
-        if "sleeve_length_cm" in requested:
-            result["sleeve_length_cm"] = measure_sleeve_length_from_joints(
-                joints_torch, upperarm_loop_cm
-            )
+    # ── mass_kg ───────────────────────────────────────────────────────────────
+    # Plain V × ρ_median(gender) — fully differentiable. Differs from measure()
+    # which uses BF-corrected density (depends on neck/waist/hip → non-diff).
+    # See docstring "Note on mass_kg" for the rationale.
+    if "mass_kg" in requested:
+        gender_str = _infer_gender(model, verts)
+        density = _MEDIAN_DENSITY.get(gender_str, 1045.0)
+        volume_m3 = anthro.volume(verts).squeeze(0)
+        result["mass_kg"] = volume_m3 * density
 
     return result
 
