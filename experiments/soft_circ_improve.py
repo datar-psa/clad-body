@@ -141,7 +141,17 @@ def soft_circ(verts, edge_indices, z, n_bins, sigma_z, tau,
     # Convert back to Cartesian (relative to centroid, then offset back)
     pts  = torch.stack([cx + r_bin * torch.cos(bin_centers),
                         cy + r_bin * torch.sin(bin_centers)], dim=-1)
-    circ = torch.sum(torch.linalg.norm(torch.roll(pts, -1, 0) - pts, dim=-1))
+
+    # Convex hull perimeter (tape-measure behaviour: bridges concavities)
+    # Hull index selection is non-differentiable but gradients flow through
+    # the selected vertex positions (sum of edge norms is differentiable).
+    from scipy.spatial import ConvexHull as _CH
+    try:
+        hull_idx = _CH(pts.detach().cpu().numpy()).vertices
+        hp = pts[hull_idx]
+        circ = torch.sum(torch.linalg.norm(torch.roll(hp, -1, 0) - hp, dim=-1))
+    except Exception:
+        circ = torch.sum(torch.linalg.norm(torch.roll(pts, -1, 0) - pts, dim=-1))
     return circ
 
 

@@ -43,6 +43,16 @@ ALL_SUBJECTS = [
 # Tight tolerance for the keys that share a code path with measure() — float32 drift only.
 TOLERANCE_CM = 0.05
 
+# bust_cm uses soft circumference (recentered + convex hull).  Calibrated to
+# A≈1.0, MAE=0.06 cm on 100 bodies.  The convex hull matches the reference
+# plane-sweep + convex-hull in measure() very closely.
+TOLERANCE_BUST_CM = 0.5
+
+# underbust_cm uses the same soft circumference.  Calibrated MAE=0.39 cm on
+# 100 bodies.  Slightly noisier than bust because underbust z estimation
+# (breast vertex min-z) varies more across body types.
+TOLERANCE_UNDERBUST_CM = 2.0
+
 # thigh_cm uses BASE_MESH_THIGH_VERTICES which is a known-broken vertex loop that
 # under-reports by 3–6 cm vs the plane-sweep measure().  The gradient signal is still
 # useful for optimization (direction is correct), but absolute values diverge badly.
@@ -70,6 +80,8 @@ TOLERANCE_SLEEVE_CM = 0.65
 TOLERANCE_MASS_KG = 3.1
 
 _KEY_TOLERANCE = {
+    "bust_cm": TOLERANCE_BUST_CM,
+    "underbust_cm": TOLERANCE_UNDERBUST_CM,
     "thigh_cm": TOLERANCE_THIGH_CM,
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
     "inseam_cm": TOLERANCE_INSEAM_CM,
@@ -203,6 +215,26 @@ def test_gradient_flow():
     )
 
 
+def test_gradient_flow_bust_underbust():
+    """bust_cm and underbust_cm produce non-zero gradients through soft_circ."""
+    body = _load("female_average", requires_grad=True)
+
+    m = measure_grad(body, only=["bust_cm", "underbust_cm"])
+    loss = m["bust_cm"] + m["underbust_cm"]
+    loss.backward()
+
+    non_zero = {
+        label: t.grad
+        for label, t in body.phenotype_kwargs.items()
+        if t.grad is not None and t.grad.abs().sum().item() > 0
+    }
+    assert non_zero, (
+        "No non-zero gradients on any phenotype tensor after "
+        "bust_cm + underbust_cm backward(). "
+        f"Labels: {list(body.phenotype_kwargs.keys())}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. ``only=`` filtering
 # ---------------------------------------------------------------------------
@@ -225,9 +257,9 @@ def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
     body = _load("female_average")
     with pytest.raises(ValueError) as exc_info:
-        measure_grad(body, only=["bust_cm"])
+        measure_grad(body, only=["hip_cm"])
     msg = str(exc_info.value)
-    assert "bust_cm" in msg
+    assert "hip_cm" in msg
     for key in SUPPORTED_KEYS:
         assert key in msg, f"SUPPORTED_KEYS entry '{key}' missing from error message"
 
