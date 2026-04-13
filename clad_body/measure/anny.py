@@ -1119,6 +1119,8 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
 #: this set to check support before requesting a key.
 SUPPORTED_KEYS = frozenset({
     "height_cm",
+    "bust_cm",
+    "underbust_cm",
     "waist_cm",
     "thigh_cm",
     "upperarm_cm",
@@ -1183,8 +1185,9 @@ def measure_grad(body, *, pose=None, only=None):
             via :func:`load_anny_from_params`).
 
     Supported keys (Anny):
-        ``height_cm``, ``waist_cm``, ``thigh_cm``, ``upperarm_cm``,
-        ``inseam_cm``, ``sleeve_length_cm``, ``mass_kg``.
+        ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
+        ``thigh_cm``, ``upperarm_cm``, ``inseam_cm``,
+        ``sleeve_length_cm``, ``mass_kg``.
 
     Note on mass_kg:
         Computed as ``volume(verts) × _MEDIAN_DENSITY[gender]`` where
@@ -1267,6 +1270,15 @@ def _measure_grad_from_verts(model, verts, *, requested):
     if "height_cm" in requested:
         col = verts[:, :, height_axis]
         result["height_cm"] = (col.max() - col.min()) * 100
+
+    # ── bust_cm / underbust_cm (soft circumference) ─────────────────────────
+    if "bust_cm" in requested or "underbust_cm" in requested:
+        from ._soft_circ import measure_bust_underbust
+        bu = measure_bust_underbust(model, verts)
+        if "bust_cm" in requested and "bust_cm" in bu:
+            result["bust_cm"] = bu["bust_cm"]
+        if "underbust_cm" in requested:
+            result["underbust_cm"] = bu["underbust_cm"]
 
     # ── waist_cm ─────────────────────────────────────────────────────────────
     if "waist_cm" in requested:

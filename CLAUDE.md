@@ -35,6 +35,16 @@ The legacy entry points `generate_anny_mesh_from_params()`, `measure_body_from_v
 
 `vertices` are XY-centred (via `reposition_apose`), but Anny bone positions from the forward pass are not. `_xy_offset` (np.ndarray, shape (2,)) stores the centering offset so `measure()` can align joint positions to the mesh. Handled automatically — callers don't need to think about it. `model` and `mesh` are lazy attributes.
 
+## Soft circumference — bust_cm, underbust_cm (differentiable)
+
+**Differentiable through edge-plane intersection + angular binning.** `bust_cm` and `underbust_cm` in `measure_grad` use soft sigmoid gates on torso edge intersections with a horizontal cutting plane, angular binning with r-biased softmax per bin, recentered polar coordinates, and convex hull perimeter. Implementation: [`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py).
+
+**Recentering is critical.** The polar origin is the weighted centroid of crossing points (detached from the gradient), not the mesh XY origin. Without recentering, Anny's D-shaped cross-section (XY origin sits ~3 cm from the back surface, ~25 cm from the front) leaves 71% of bodies with empty back bins. 
+
+**Convex hull perimeter = tape measure.** The convex hull of the 72-bin polygon bridges concavities (breast cleavage). Hull vertex selection is non-differentiable but gradients flow through the selected vertex positions. With convex hull, bust MAE drops to 0.06 cm (A≈1.0, near-identity calibration).
+
+**Topology-only caching:** `_build_torso_edges` and `_build_breast_idx` are cached on the model instance — they depend only on skinning weights and face connectivity, not on phenotype parameters. Safe to reuse across forward passes.
+
 ## Group C — sleeve length (ISO 8559-1 §5.4.14 + §5.4.15)
 
 **Differentiable through LBS.** `sleeve_length_cm` = bone-chain `||shoulder_ball − elbow|| + ||elbow − wrist||` (pose-invariant — same in A-pose and rest pose) plus a soft-tissue correction `offset = a*upperarm_loop + bias` where `upperarm_loop` is the differentiable vertex-loop upperarm circumference. All inputs flow through Anny's blendshapes + LBS skinning, so gradients propagate end-to-end. Calibrated to RMS 0.33 cm vs the slow plane-slice surface walk on the 6 testdata bodies. Implementation: `measure_sleeve_length_from_joints` in [`clad_body/measure/_lengths.py`](clad_body/measure/_lengths.py).
