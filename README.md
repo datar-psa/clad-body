@@ -1,6 +1,6 @@
 # clad-body
 
-ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models. Nine keys are differentiable through PyTorch autograd for gradient-based body fitting.
+ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models. Ten keys are differentiable through PyTorch autograd for gradient-based body fitting.
 
 Anny and MHR give you a 14–18K vertex mesh and nothing to measure it with. SMPL tooling doesn't port over, and the plane-sweep algorithms look simple until you hit convex-hull tape simulation, contour-fragment merging, and ISO-compliant landmark detection for bust/hip/crotch. `clad-body` is that work, done once — 25 anthropometric measurements over circumferences, lengths, and body composition (volume, mass, BMI, body fat), calibrated against real scan data. It's used in production at [Clad](https://clad.you) for size-aware virtual try-on.
 
@@ -54,7 +54,7 @@ m = measure(body)
 
 ### Differentiable path — `measure_grad` (Anny only, experimental)
 
-> **Under active development.** API surface and supported keys may change between minor versions. Nine keys are differentiable today; more will follow.
+> **Under active development.** API surface and supported keys may change between minor versions. Ten keys are differentiable today; more will follow.
 
 For autograd-based optimization of the body mesh, use `measure_grad(body)` instead of `measure(body)`. Same input, same key names — but the returned values are PyTorch tensors with autograd history, so you can put them directly into a loss and backprop into the Anny phenotype parameters.
 
@@ -85,6 +85,7 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 | `height_cm`, `waist_cm` | exact (same loop / extent) |
 | `bust_cm` | MAE 0.06 cm, max 0.18 cm |
 | `underbust_cm` | MAE 0.39 cm, max 1.61 cm |
+| `hip_cm` | MAE 0.46 cm, max 1.39 cm |
 | `inseam_cm` | RMS 0.06 cm, max 0.10 cm |
 | `sleeve_length_cm` | RMS 0.33 cm, max 0.55 cm |
 | `upperarm_cm` | ≤ 1 cm |
@@ -95,7 +96,7 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 
 Both `measure()` and `measure_grad` report **convex hull circumference**, not the raw cross-section perimeter. This matches ISO 8559-1: a real measuring tape bridges across concavities (e.g., cleavage between breasts, armpit crease) rather than dipping into them. The convex hull perimeter is always ≤ the raw contour perimeter — the difference is most visible at the bust on larger cup sizes where the cleavage concavity can shorten the measurement by 1-3 cm compared to following the actual surface.
 
-`measure_grad` builds a 72-point polygon via differentiable soft edge-plane intersection, then takes its `scipy.spatial.ConvexHull` perimeter. Every `measure_grad()` call recomputes the hull from scratch (new forward pass → new polygon → new hull). The hull decides *which* polygon vertices to keep (discrete, like `argmax` or `tensor[mask]`) — but the perimeter of those vertices is a plain sum of `torch.linalg.norm` over their positions, so `loss.backward()` flows gradients through the kept vertices back to the Anny phenotype params. Dropped vertices (inside the hull, e.g., cleavage bins) get zero gradient — correct, since they don't affect the tape measure. The hull indices can change between optimization steps if the body shape changes enough (e.g., breasts flatten and the cleavage disappears), but the perimeter value is continuous at those transitions so the loss doesn't jump. In practice the hull is very stable: ~3-5 bins are consistently concave (cleavage), the rest consistently on the hull. See `clad_body/measure/_soft_circ.py`.
+`measure_grad` builds a 72-point polygon via differentiable soft edge-plane intersection, then takes its `scipy.spatial.ConvexHull` perimeter. This is used for bust, underbust, and hip — each at its respective anatomical height. Every `measure_grad()` call recomputes the hull from scratch (new forward pass → new polygon → new hull). The hull decides *which* polygon vertices to keep (discrete, like `argmax` or `tensor[mask]`) — but the perimeter of those vertices is a plain sum of `torch.linalg.norm` over their positions, so `loss.backward()` flows gradients through the kept vertices back to the Anny phenotype params. Dropped vertices (inside the hull, e.g., cleavage or gluteal cleft bins) get zero gradient — correct, since they don't affect the tape measure. The hull indices can change between optimization steps if the body shape changes enough, but the perimeter value is continuous at those transitions so the loss doesn't jump. See `clad_body/measure/_soft_circ.py`.
 
 Requesting any other key raises `ValueError`. There is no silent numpy fallback — it would break gradient flow without warning. For non-differentiable keys use `measure()`.
 

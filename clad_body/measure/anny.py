@@ -1122,6 +1122,7 @@ SUPPORTED_KEYS = frozenset({
     "bust_cm",
     "underbust_cm",
     "waist_cm",
+    "hip_cm",
     "thigh_cm",
     "upperarm_cm",
     "inseam_cm",
@@ -1186,7 +1187,7 @@ def measure_grad(body, *, pose=None, only=None):
 
     Supported keys (Anny):
         ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
-        ``thigh_cm``, ``upperarm_cm``, ``inseam_cm``,
+        ``hip_cm``, ``thigh_cm``, ``upperarm_cm``, ``inseam_cm``,
         ``sleeve_length_cm``, ``mass_kg``.
 
     Note on mass_kg:
@@ -1279,6 +1280,12 @@ def _measure_grad_from_verts(model, verts, *, requested):
             result["bust_cm"] = bu["bust_cm"]
         if "underbust_cm" in requested:
             result["underbust_cm"] = bu["underbust_cm"]
+
+    # ── hip_cm (soft circumference) ──────────────────────────────────────
+    if "hip_cm" in requested:
+        from ._soft_circ import measure_hip
+        hp = measure_hip(model, verts)
+        result["hip_cm"] = hp["hip_cm"]
 
     # ── waist_cm ─────────────────────────────────────────────────────────────
     if "waist_cm" in requested:

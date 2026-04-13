@@ -1,4 +1,4 @@
-"""Differentiable soft circumference for bust and underbust.
+"""Differentiable soft circumference for bust, underbust, and hip.
 
 Edge-plane intersection with sigmoid gates, angular binning with r-biased
 softmax, recentered polar coordinates, and convex hull perimeter.
@@ -8,12 +8,14 @@ XY origin). This eliminates empty back bins caused by Anny's D-shaped
 cross-section where the XY origin sits near the posterior surface.
 
 The convex hull of the resulting polygon gives the tape-measure circumference
-(bridges concavities like the breast cleavage). Hull vertex selection is
-non-differentiable but gradients flow through the selected vertex positions.
+(bridges concavities like the breast cleavage or gluteal cleft). Hull vertex
+selection is non-differentiable but gradients flow through the selected
+vertex positions.
 
 Calibration (100-body dataset, random seed 42):
     bust:      A = 0.9997, B = 0.12   (MAE 0.06 cm, max 0.18 cm)
     underbust: A = 0.9830, B = 1.86   (MAE 0.39 cm, max 1.61 cm)
+    hip:       A = 1.0039, B = 0.47   (MAE 0.46 cm, max 1.39 cm)
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ import numpy as np
 import torch
 from scipy.spatial import ConvexHull
 
-from .anny import ARM_HAND_BONES, BREAST_BONES
+from .anny import ARM_HAND_BONES, BASE_MESH_HIP_VERTICES, BREAST_BONES, remap_vertex_indices
 
 # ── Hyperparameters (validated on 100-body sweep) ────────────────────────────
 
@@ -33,6 +35,7 @@ TAU = 0.050           # metres — sigmoid gate width + softmax temperature
 
 BUST_A, BUST_B = 0.9997, 0.12
 UB_A, UB_B = 0.9830, 1.86
+HIP_A, HIP_B = 1.0039, 0.47
 
 
 def _build_torso_edges(model, faces):
@@ -154,6 +157,35 @@ def underbust_z(model, verts_zup):
     return verts_zup[0, breast_idx, 2].min()
 
 
+def _build_hip_idx(model):
+    """Vertex indices at hip level (remapped from BASE_MESH_HIP_VERTICES).
+
+    Cached on ``model._soft_circ_hip_idx``.
+
+    Returns (K,) long tensor.
+    """
+    cached = getattr(model, "_soft_circ_hip_idx", None)
+    if cached is not None:
+        return cached
+    idx = remap_vertex_indices(model, BASE_MESH_HIP_VERTICES)
+    result = torch.tensor(idx, dtype=torch.long)
+    model._soft_circ_hip_idx = result
+    return result
+
+
+def hip_z(model, verts_zup):
+    """Hip height from hip vertex mean Z (differentiable).
+
+    Uses ``BASE_MESH_HIP_VERTICES`` — 28 vertices at the level of greatest
+    buttock prominence.  The mean Z of these vertices gives a reliable
+    anatomical anchor at ~52% height.
+
+    Returns scalar torch tensor (metres).
+    """
+    hip_idx = _build_hip_idx(model)
+    return verts_zup[0, hip_idx, 2].mean()
+
+
 def soft_circumference(verts_zup, edge_indices, z):
     """Differentiable circumference at height z.
 
@@ -257,3 +289,28 @@ def measure_bust_underbust(model, verts):
     result["underbust_cm"] = UB_A * raw_ub + UB_B
 
     return result
+
+
+def measure_hip(model, verts):
+    """Compute differentiable hip circumference.
+
+    Same algorithm as bust: soft circumference at the anatomical hip height
+    (mean Z of ``BASE_MESH_HIP_VERTICES``).  The convex hull bridges the
+    gluteal cleft, matching the tape-measure convention.
+
+    At hip level (~52% height) arms are far above, so the torso-only edge
+    set naturally includes all hip geometry without interference.
+
+    Args:
+        model: Anny model.
+        verts: (1, V, 3) raw Anny vertices (Y-up or Z-up — auto-detected).
+
+    Returns:
+        dict with ``hip_cm`` as 0-dim torch tensor.
+    """
+    verts_zup = _to_zup(verts)
+    edges = _build_torso_edges(model, model.faces)
+
+    hz = hip_z(model, verts_zup)
+    raw_hip = soft_circumference(verts_zup, edges, hz) * 100
+    return {"hip_cm": HIP_A * raw_hip + HIP_B}
