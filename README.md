@@ -105,6 +105,14 @@ Strictly speaking, `stomach_cm` is differentiable almost everywhere, with numeri
 
 Requesting any other key raises `ValueError`. There is no silent numpy fallback — it would break gradient flow without warning. For non-differentiable keys use `measure()`.
 
+#### Parameter sensitivity
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/sensitivity_local_changes.png" alt="Heatmap of |d(measurement)/d(local_change)| averaged across 6 reference bodies — rows are local_changes sorted by total normalised leverage, columns are the 11 supported measurements" width="700">
+</p>
+
+Jacobian heatmap for every Anny `local_changes` dimension against every supported measurement — `|d(measurement)/d(param)|` averaged across 6 reference bodies. Darker cells mean the local_change has strong leverage over that measurement; pale cells mean the gradient is near zero and Adam will barely move it. Useful when deciding which params to unfreeze for a given fit target (e.g. optimising `bust_cm` is pointless without `measure-bust-circ-incr` or `torso-scale-horiz-incr` in the active set). Regenerate with `python tools/sensitivity_map.py --output <path>`.
+
 ## Public API
 
 | Import | What |
