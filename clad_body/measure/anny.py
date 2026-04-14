@@ -103,6 +103,12 @@ ANNY_JOINT_MAP = {
 # Excludes clavicle (48, 74) which is at the torso boundary.
 ARM_HAND_BONES = set(range(49, 74)) | set(range(75, 100))
 
+# Leg/foot bone indices (upperleg01 through toes, excluding pelvis which is a
+# torso-boundary bone). Used by soft-thigh to partition vertices into single-leg
+# subsets so angular binning around one thigh doesn't mix in the other leg.
+LEFT_LEG_BONES = set(range(2, 21))    # upperleg01.L (2) through toe5-3.L (20)
+RIGHT_LEG_BONES = set(range(22, 41))  # upperleg01.R (22) through toe5-3.R (40)
+
 
 # ── Body fat & density estimation ──
 # Navy formula (Hodgdon & Beckett, 1984) for normal range,
@@ -619,16 +625,10 @@ def breast_floor_z(model, mesh_verts, weight_threshold=0.3):
 # WARNING: Hip and bust loops are NOT accurate circumference tracers — they don't
 # form clean anatomical rings. They ARE used for Z-height anchoring only (the mean Z
 # of each loop gives a reliable anatomical landmark at ~75% for bust, ~52% for hips).
-# Do NOT use these for circumference measurement — use plane sweep instead.
+# Do NOT use these for circumference measurement — use plane sweep (reporting)
+# or soft circumference (``measure_grad``) instead.
 # Upperarm loop is reasonable as a differentiable proxy (< 1 cm vs plane sweep).
-# THIGH LOOP IS TOTALLY BROKEN — consistently under-reports by ~3-6 cm vs the plane
-# sweep because the 20 selected vertices do not form a complete anatomical ring around
-# the thigh cross-section. DO NOT use BASE_MESH_THIGH_VERTICES for reporting. It is
-# kept only as a differentiable gradient signal for optimization (the gradient direction
-# is correct even if the absolute value is wrong). See findings/vertex_loops_vs_plane_sweep.md.
 BASE_MESH_HIP_VERTICES = [4296, 4295, 4291, 4292, 4336, 4339, 4331, 4359, 10983, 10958, 10965, 10962, 10922, 10921, 10925, 10926, 10923, 10924, 10860, 10867, 10853, 10854, 4218, 4217, 4233, 4225, 4294, 4293]
-BASE_MESH_BUST_VERTICES = [1445, 1438, 1855, 1888, 1762, 1798, 8470, 8434, 8560, 8527, 8126, 8133, 8315, 8313, 8365, 8241, 8247, 8253, 1575, 1569, 1563, 1693, 1641, 1643]
-BASE_MESH_THIGH_VERTICES = [6745, 6744, 6743, 6742, 6741, 6740, 6739, 6738, 6737, 6736, 6755, 6754, 6753, 6752, 6751, 6750, 6749, 6748, 6747, 6746]  # BROKEN — see comment above
 BASE_MESH_UPPERARM_VERTICES = [3788, 1710, 1706, 1705, 1701, 1702, 1703, 1704, 1694, 1700, 1695, 1696, 3763, 1697, 1698, 1699, 1709, 1708, 1707, 3850]
 
 # Shoulder width landmark seeds (base-mesh indices). The R/L acromion seeds
@@ -697,8 +697,6 @@ def setup_extended_anthro(model):
         return cached
     anthro = anny.Anthropometry(model)
     anthro.hip_vertex_indices = remap_vertex_indices(model, BASE_MESH_HIP_VERTICES)
-    anthro.bust_vertex_indices = remap_vertex_indices(model, BASE_MESH_BUST_VERTICES)
-    anthro.thigh_vertex_indices = remap_vertex_indices(model, BASE_MESH_THIGH_VERTICES)
     anthro.upperarm_vertex_indices = remap_vertex_indices(model, BASE_MESH_UPPERARM_VERTICES)
 
     # Shoulder-width landmarks: seeds + per-side k-ring patches for soft-argmax.
@@ -789,8 +787,10 @@ def compute_loop_circumference(verts, vertex_indices):
     Same algorithm as anny.Anthropometry.waist_circumference():
     vertices at given indices form a closed loop, sum of edge lengths.
 
-    Used by tuning_anny.py for gradient-based optimization (waist, thigh).
-    For measurement reporting, use plane sweep instead (measure_thigh/measure_upperarm).
+    Used by measure_grad for waist (46-vertex anatomical loop) and upperarm
+    (20 vertices, < 1 cm error). For reporting, use plane sweep
+    (``measure()``); for differentiable thigh/bust/hip/underbust use the
+    soft circumference path in ``_soft_circ.py``.
 
     Args:
         verts: (1, V, 3) tensor — full mesh vertices
@@ -1431,11 +1431,11 @@ def _measure_grad_from_verts(model, verts, *, requested):
         st = measure_stomach_soft(model, verts)
         result["stomach_cm"] = st["stomach_cm"]
 
-    # ── thigh_cm ─────────────────────────────────────────────────────────────
+    # ── thigh_cm (soft circumference, per-leg edges) ────────────────────────
     if "thigh_cm" in requested:
-        result["thigh_cm"] = (
-            compute_loop_circumference(verts, anthro.thigh_vertex_indices).squeeze(0) * 100
-        )
+        from ._soft_circ import measure_thigh_soft
+        th = measure_thigh_soft(model, verts)
+        result["thigh_cm"] = th["thigh_cm"]
 
     # ── upperarm_cm (also required as input for sleeve_length) ───────────────
     upperarm_loop_cm = None

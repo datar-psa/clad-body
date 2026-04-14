@@ -116,9 +116,9 @@ def render_contour(subject: str, measurement: str, output_path: str):
 
     # Draw the specific contour
     if measurement == "crotch":
-        # Crotch draws both front and back midline polylines
+        # Crotch draws front_rise + back_rise (or combined crotch_length)
         rgb = tuple(int(c * 255) for c in mcolors.to_rgb("lime"))
-        for key in ("crotch_front", "crotch_back"):
+        for key in ("front_rise", "back_rise"):
             pts = linear_polylines.get(key)
             if pts is not None:
                 px, py = _project_3d_to_2d(pts, cam_pose, xmag, ymag, view_w, view_h)

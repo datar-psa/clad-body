@@ -25,9 +25,8 @@ Categories:
                            agree with FD to within ~2% relative.
     2. Loose agreement  -- soft-circ keys (bust, hip, underbust) with hull
                            selection agree within ~10% relative.
-    3. Sign only        -- known-noisy keys (stomach, thigh) only need
-                           correct gradient DIRECTION. thigh is documented as
-                           "gradient direction only" in the README.
+    3. Sign only        -- known-noisy keys (stomach) only need correct
+                           gradient DIRECTION.
     4. Finite gradients -- no NaN or Inf in any .grad tensor after backward.
     5. End-to-end conv  -- Adam converges on a realistic multi-target loss.
 
@@ -154,6 +153,8 @@ LOOSE_PAIRS = [
     ("underbust_cm",    "weight"),
     ("hip_cm",          "weight"),
     ("hip_cm",          "height"),
+    ("thigh_cm",        "weight"),
+    ("thigh_cm",        "height"),
     ("upperarm_cm",     "weight"),
     ("upperarm_cm",     "muscle"),
     ("sleeve_length_cm", "height"),
@@ -163,12 +164,11 @@ LOOSE_PAIRS = [
 ]
 
 # Sign-only -- stomach soft-argmin picks a different Z than the reference on
-# some bodies; thigh is documented as "gradient direction only" in the README.
+# some bodies, so autograd and FD magnitudes can disagree even when direction
+# is right.
 SIGN_ONLY_PAIRS = [
     ("stomach_cm",      "weight"),
     ("stomach_cm",      "height"),
-    ("thigh_cm",        "weight"),
-    ("thigh_cm",        "height"),
 ]
 
 
@@ -225,10 +225,9 @@ def test_gradcheck_sign_only(key, label):
     """Autograd and FD agree on gradient DIRECTION.
 
     stomach_cm uses soft-argmin over torso Y; on some bodies the selected
-    Z drifts 1-2 cm from the reference argmax, so magnitudes disagree. thigh_cm
-    is documented as "gradient direction only" (README calibration table).
-    Both are usable in a loss function because Adam's step direction comes
-    from the sign, but reporting should use measure() not measure_grad().
+    Z drifts 1-2 cm from the reference argmax, so magnitudes disagree.
+    It is still usable in a loss function because Adam's step direction
+    comes from the sign, but reporting should use measure() not measure_grad().
 
     This test pins the usable part: the sign is correct.
     """

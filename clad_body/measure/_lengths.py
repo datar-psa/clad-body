@@ -943,12 +943,18 @@ def extract_linear_measurement_polylines(mesh, measurements, joints):
         result["inseam"] = pts
 
     # Crotch length: front and back midline paths from waist to perineum.
+    # front_rise: front waist → perineum (visualises front_rise_cm)
+    # back_rise:  back waist → perineum (visualises back_rise_cm)
+    # crotch_length: combined U-path front waist → perineum → back waist
+    #                (visualises crotch_length_cm = front_rise + back_rise)
     crotch_front = measurements.get("_crotch_front_pts")
     crotch_back = measurements.get("_crotch_back_pts")
     if crotch_front is not None:
-        result["crotch_front"] = crotch_front
+        result["front_rise"] = crotch_front
     if crotch_back is not None:
-        result["crotch_back"] = crotch_back
+        result["back_rise"] = crotch_back
+    if crotch_front is not None and crotch_back is not None:
+        result["crotch_length"] = np.concatenate([crotch_front, crotch_back[::-1]])
 
     # Shirt length: surface-traced polyline from measure_shirt_length().
     shirt_pts = measurements.get("_shirt_length_pts")

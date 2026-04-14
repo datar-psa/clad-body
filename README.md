@@ -92,7 +92,7 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 | `shoulder_width_cm` | RMS 1.39 cm on 100 random bodies (91 % within ±2 cm). Max 5cm |
 | `upperarm_cm` | ≤ 1 cm |
 | `mass_kg` | ≤ 3 kg |
-| `thigh_cm` | **broken — gradient direction only** (vertex loop under-reports by 3–6 cm; use `measure()` for reporting) |
+| `thigh_cm` | MAE 0.06 cm, max 0.18 cm (100 random bodies) |
 
 #### Circumference = convex hull perimeter, not contour perimeter
 

@@ -58,10 +58,11 @@ TOLERANCE_UNDERBUST_CM = 2.0
 # (A=1.0039, B=0.47): MAE 0.46 cm, max 1.39 cm.  Testdata max: 0.96 cm.
 TOLERANCE_HIP_CM = 1.5
 
-# thigh_cm uses BASE_MESH_THIGH_VERTICES which is a known-broken vertex loop that
-# under-reports by 3–6 cm vs the plane-sweep measure().  The gradient signal is still
-# useful for optimization (direction is correct), but absolute values diverge badly.
-TOLERANCE_THIGH_CM = 10.0
+# thigh_cm uses soft circumference at 0.43 × mesh_height — exactly where
+# measure()'s plane-sweep reference is hard-capped, giving near-identity
+# agreement.  Per-leg edge sets keep the angular bins from mixing across
+# the two thighs.  Calibrated on 100 bodies: MAE 0.06 cm, max 0.18 cm.
+TOLERANCE_THIGH_CM = 0.5
 
 # upperarm_cm vertex loop is reasonable as a proxy but not ISO-accurate; allow < 1.5 cm.
 TOLERANCE_UPPERARM_CM = 1.5

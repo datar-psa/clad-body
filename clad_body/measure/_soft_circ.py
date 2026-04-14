@@ -31,6 +31,8 @@ from .anny import (
     ARM_HAND_BONES,
     BASE_MESH_HIP_VERTICES,
     BREAST_BONES,
+    LEFT_LEG_BONES,
+    RIGHT_LEG_BONES,
     remap_vertex_indices,
     setup_extended_anthro,
 )
@@ -46,6 +48,18 @@ TAU = 0.050           # metres — sigmoid gate width + softmax temperature
 BUST_A, BUST_B = 0.9997, 0.12
 UB_A, UB_B = 0.9830, 1.86
 HIP_A, HIP_B = 1.0039, 0.47
+
+# Thigh — soft circumference on per-leg edges at 43 % of body height, which
+# is where the ISO plane-sweep reference ALWAYS lands (the sweep is hard-
+# capped at 0.43 × height in :func:`~clad_body.measure._circumferences.measure_thigh`,
+# so the reference effectively reports "fullest thigh at the sweep cap"
+# regardless of bone geometry — using the same fraction here matches it to
+# near-identity).
+#
+# Calibration on 100 random bodies from data_10k_42/test.json:
+#     A = 0.999, B = -0.24   (MAE 0.07 cm, P95 0.17 cm, max 0.25 cm)
+THIGH_Z_FRAC = 0.43              # fraction of mesh height
+THIGH_A, THIGH_B = 0.999, -0.24
 
 # Stomach — see measure_stomach_soft for algorithm
 STOMACH_Z_GATE_TAU = 0.005       # metres — soft Z-band gate edge width
@@ -352,6 +366,95 @@ def measure_hip(model, verts):
     hz = hip_z(model, verts_zup)
     raw_hip = soft_circumference(verts_zup, edges, hz) * 100
     return {"hip_cm": HIP_A * raw_hip + HIP_B}
+
+
+def _build_leg_edges(model, side):
+    """Build edge index tensor for a single-leg submesh.
+
+    A face is kept only if all three vertices are dominantly skinned to a bone
+    of the requested leg (``'L'`` or ``'R'``). This isolates one thigh so the
+    angular binning inside :func:`soft_circumference` doesn't mix crossings
+    from the other leg.
+
+    Cached on ``model._soft_circ_leg_edges_<side>``.
+
+    Returns (E, 2) long tensor.
+    """
+    attr = f"_soft_circ_leg_edges_{side}"
+    cached = getattr(model, attr, None)
+    if cached is not None:
+        return cached
+
+    leg_bones = LEFT_LEG_BONES if side == "L" else RIGHT_LEG_BONES
+
+    vbw = model.vertex_bone_weights.detach().cpu().numpy()
+    vbi = model.vertex_bone_indices.detach().cpu().numpy()
+    dominant_bone = vbi[np.arange(vbw.shape[0]), np.argmax(vbw, axis=1)]
+    leg_vert_mask = np.isin(dominant_bone, list(leg_bones))
+
+    faces = model.faces
+    faces_np = faces.detach().cpu().numpy() if hasattr(faces, "detach") else np.asarray(faces)
+    face_all_leg = leg_vert_mask[faces_np].all(axis=1)
+    leg_faces = faces_np[face_all_leg]
+
+    edges_set = set()
+    for f in leg_faces:
+        for i in range(3):
+            a, b = int(f[i]), int(f[(i + 1) % 3])
+            edges_set.add((min(a, b), max(a, b)))
+
+    result = torch.tensor(list(edges_set), dtype=torch.long)
+    setattr(model, attr, result)
+    return result
+
+
+def thigh_z(verts_zup):
+    """Thigh cutting-plane height — :data:`THIGH_Z_FRAC` × mesh height.
+
+    The ISO plane-sweep reference hard-caps its thigh scan at 0.43 × height
+    (see :func:`~clad_body.measure._circumferences.measure_thigh`), so this
+    matches that exact Z. ``verts_zup[0, :, 2].max()`` is differentiable,
+    so gradients flow from any phenotype or local_change that affects
+    overall body height.
+
+    Returns scalar torch tensor (metres).
+    """
+    mesh_height = verts_zup[0, :, 2].max()
+    return THIGH_Z_FRAC * mesh_height
+
+
+def measure_thigh_soft(model, verts):
+    """Compute differentiable thigh circumference.
+
+    Same soft-circumference machinery as bust/hip — edge-plane intersection
+    with sigmoid gates, angular binning with r-biased softmax, recentered
+    polar coordinates, convex hull perimeter — but applied per-leg to single-
+    leg edge sets so the two thighs don't share an angular bin.
+
+    The cutting plane sits at ``THIGH_Z_FRAC × mesh_height`` (43 % of body
+    height) — exactly where the ISO plane-sweep reference is hard-capped,
+    giving near-identity agreement (MAE 0.07 cm, max 0.25 cm across 100
+    random bodies). Left and right circumferences are averaged.
+
+    Args:
+        model: Anny model (with ``_last_bone_heads`` / ``_last_bone_tails`` set).
+        verts: (1, V, 3) raw Anny vertices (Y-up or Z-up — auto-detected).
+
+    Returns:
+        dict with ``thigh_cm`` as 0-dim torch tensor.
+    """
+    verts_zup = _to_zup(verts)
+
+    edges_L = _build_leg_edges(model, "L").to(verts_zup.device)
+    edges_R = _build_leg_edges(model, "R").to(verts_zup.device)
+
+    z = thigh_z(verts_zup)
+
+    circ_L = soft_circumference(verts_zup, edges_L, z)
+    circ_R = soft_circumference(verts_zup, edges_R, z)
+
+    raw_thigh_cm = (circ_L + circ_R) / 2 * 100
+    return {"thigh_cm": THIGH_A * raw_thigh_cm + THIGH_B}
 
 
 def waist_z(model, verts_zup):
