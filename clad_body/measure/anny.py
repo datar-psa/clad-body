@@ -1122,6 +1122,7 @@ SUPPORTED_KEYS = frozenset({
     "bust_cm",
     "underbust_cm",
     "waist_cm",
+    "stomach_cm",
     "hip_cm",
     "thigh_cm",
     "upperarm_cm",
@@ -1187,8 +1188,8 @@ def measure_grad(body, *, pose=None, only=None):
 
     Supported keys (Anny):
         ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
-        ``hip_cm``, ``thigh_cm``, ``upperarm_cm``, ``inseam_cm``,
-        ``sleeve_length_cm``, ``mass_kg``.
+        ``stomach_cm``, ``hip_cm``, ``thigh_cm``, ``upperarm_cm``,
+        ``inseam_cm``, ``sleeve_length_cm``, ``mass_kg``.
 
     Note on mass_kg:
         Computed as ``volume(verts) × _MEDIAN_DENSITY[gender]`` where
@@ -1292,6 +1293,12 @@ def _measure_grad_from_verts(model, verts, *, requested):
         result["waist_cm"] = (
             compute_loop_circumference(verts, anthro.waist_vertex_indices).squeeze(0) * 100
         )
+
+    # ── stomach_cm (soft max over Z range between hip and waist) ────────────
+    if "stomach_cm" in requested:
+        from ._soft_circ import measure_stomach_soft
+        st = measure_stomach_soft(model, verts)
+        result["stomach_cm"] = st["stomach_cm"]
 
     # ── thigh_cm ─────────────────────────────────────────────────────────────
     if "thigh_cm" in requested:

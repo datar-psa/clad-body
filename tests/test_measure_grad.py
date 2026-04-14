@@ -76,6 +76,15 @@ TOLERANCE_INSEAM_CM = 0.20
 # against measure_sleeve_length_iso_reference that measure() now uses.  Max error: 0.55 cm.
 TOLERANCE_SLEEVE_CM = 0.65
 
+# stomach_cm uses soft-argmin over torso vertex Y in [hip_z, waist_z] to pick
+# the belly Z (the most-anterior torso vertex), then one soft_circumference
+# at that Z.  Validated on a 100-body random sample from
+# hmr/body-tuning/questionnaire/data_10k_42: MAE 0.93 cm, P95 2.83 cm,
+# max 3.61 cm, bias −0.30 cm.  The residual error comes from the soft-argmin
+# smoothly averaging over vertex clusters with near-identical anterior Y,
+# whereas the non-diff argmax picks a single mesh-topology-specific spike.
+TOLERANCE_STOMACH_CM = 4.0
+
 # mass_kg in measure_grad uses V × _MEDIAN_DENSITY[gender] (no BF correction).
 # measure() uses V × BF-corrected density (Navy/Weltman → Siri equation).  The
 # two diverge most for plus-size bodies (high BF lowers density below the
@@ -88,6 +97,7 @@ _KEY_TOLERANCE = {
     "bust_cm": TOLERANCE_BUST_CM,
     "underbust_cm": TOLERANCE_UNDERBUST_CM,
     "hip_cm": TOLERANCE_HIP_CM,
+    "stomach_cm": TOLERANCE_STOMACH_CM,
     "thigh_cm": TOLERANCE_THIGH_CM,
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
     "inseam_cm": TOLERANCE_INSEAM_CM,
@@ -243,9 +253,9 @@ def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
     body = _load("female_average")
     with pytest.raises(ValueError) as exc_info:
-        measure_grad(body, only=["stomach_cm"])
+        measure_grad(body, only=["shoulder_width_cm"])
     msg = str(exc_info.value)
-    assert "stomach_cm" in msg
+    assert "shoulder_width_cm" in msg
     for key in SUPPORTED_KEYS:
         assert key in msg, f"SUPPORTED_KEYS entry '{key}' missing from error message"
 
