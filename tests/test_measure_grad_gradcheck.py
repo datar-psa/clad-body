@@ -146,7 +146,8 @@ TIGHT_PAIRS = [
     ("mass_kg",         "height"),
 ]
 
-# Looser rtol -- soft-circ (sigmoid gate + softmax bin + convex hull).
+# Looser rtol -- soft-circ (sigmoid gate + softmax bin + convex hull) and
+# soft-acromion (Gaussian X-band + softmax over Z within a 2-ring patch).
 LOOSE_PAIRS = [
     ("bust_cm",         "weight"),
     ("bust_cm",         "muscle"),
@@ -157,6 +158,8 @@ LOOSE_PAIRS = [
     ("upperarm_cm",     "muscle"),
     ("sleeve_length_cm", "height"),
     ("sleeve_length_cm", "proportions"),
+    ("shoulder_width_cm", "height"),
+    ("shoulder_width_cm", "proportions"),
 ]
 
 # Sign-only -- stomach soft-argmin picks a different Z than the reference on

@@ -76,6 +76,15 @@ TOLERANCE_INSEAM_CM = 0.20
 # against measure_sleeve_length_iso_reference that measure() now uses.  Max error: 0.55 cm.
 TOLERANCE_SLEEVE_CM = 0.65
 
+# shoulder_width_cm in measure_grad uses an anchored soft-argmax acromion
+# (Gaussian X-band around the upperarm01 midpoint, softmax over Z) plus a
+# closed-form quadratic arc through R-acromion → C7 vertex → L-acromion.
+# vs the numpy ISO path (argmax acromion + scipy cubic spline projected to
+# the back surface): testdata max 1.67 cm, 100-body real-distribution
+# RMS 1.39 cm with 91 % of bodies within ±2 cm.
+# See findings/shoulder_width_diff.md for the stability + sweep study.
+TOLERANCE_SHOULDER_WIDTH_CM = 2.0
+
 # stomach_cm uses soft-argmin over torso vertex Y in [hip_z, waist_z] to pick
 # the belly Z (the most-anterior torso vertex), then one soft_circumference
 # at that Z.  Validated on a 100-body random sample from
@@ -102,6 +111,7 @@ _KEY_TOLERANCE = {
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
     "inseam_cm": TOLERANCE_INSEAM_CM,
     "sleeve_length_cm": TOLERANCE_SLEEVE_CM,
+    "shoulder_width_cm": TOLERANCE_SHOULDER_WIDTH_CM,
     "mass_kg": TOLERANCE_MASS_KG,
 }
 
@@ -156,6 +166,90 @@ def test_forward_equivalence(name):
 # (see body-tuning/measurements_tuning/findings/anny_length_levers.md), but
 # the formula's calibration set never spanned them.  The vertex-pair
 # replacement reads the perineum directly so it can't drift like that.
+
+# ---------------------------------------------------------------------------
+# 1c. shoulder_width_cm regression — soft acromion must track on broad-shoulder
+#                                    bodies (the failure mode that motivated
+#                                    the soft-argmax + bone-anchor design)
+# ---------------------------------------------------------------------------
+#
+# An earlier fixed-vertex implementation matched the numpy reporting path on
+# female_average (the body its canonical landmark was picked from) but
+# under-measured by 4–9 cm on broad-shoulder males because the argmax acromion
+# drifted to a different vertex (v8259 vs v8219). The current soft-argmax +
+# upperarm01-midpoint anchor adapts via LBS — pin that on a sweep of the
+# `measure-shoulder-dist-incr` blendshape (the lever that most directly moves
+# the acromion laterally).
+
+@pytest.mark.parametrize(
+    "delta", [-0.5, 0.0, +0.5, +1.0],
+    ids=["shdr-0.5", "shdr+0.0", "shdr+0.5", "shdr+1.0"],
+)
+def test_shoulder_width_tracks_under_shoulder_dist_blendshape(delta):
+    """measure_grad['shoulder_width_cm'] tracks measure() across the full
+    range of the `measure-shoulder-dist-incr` blendshape on male_average.
+
+    male_average is the harder case: the female-biased canonical seed is
+    further from the male argmax acromion, so the soft band has to do real
+    work. Errors > tolerance here mean the band-anchor design has regressed.
+    """
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "male_average", "anny_params.json")
+    )
+    lc = dict(params.get("_local_changes", {}))
+    lc["measure-shoulder-dist-incr"] = float(delta)
+    params["_local_changes"] = lc
+    body = load_anny_from_params(params)
+
+    ref = measure(body, only=["shoulder_width_cm"])["shoulder_width_cm"]
+    grad = measure_grad(body, only=["shoulder_width_cm"])["shoulder_width_cm"].item()
+
+    err = abs(grad - ref)
+    assert err < TOLERANCE_SHOULDER_WIDTH_CM, (
+        f"shoulder-dist δ={delta:+.1f}: grad={grad:.3f} ref={ref:.3f} "
+        f"err={err:.3f} cm > tol={TOLERANCE_SHOULDER_WIDTH_CM} cm"
+    )
+
+
+def test_shoulder_width_smooth_under_irrelevant_blendshape():
+    """`measure-bust-circ-incr` should NOT change shoulder_width — the soft
+    acromion picks lateral landmarks, bust changes the front torso. The numpy
+    reporting path can show argmax jumps here; the differentiable path must
+    remain smooth (this is the property that makes it useful for optimisation
+    even where it diverges in absolute value from numpy).
+    """
+    import torch
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "female_average", "anny_params.json")
+    )
+    base_lc = dict(params.get("_local_changes", {}))
+
+    # 21 samples across [-1, 1]; max consecutive jump should stay tiny.
+    values = []
+    for v in [-1.0 + 0.1 * i for i in range(21)]:
+        lc = dict(base_lc)
+        lc["measure-bust-circ-incr"] = v
+        params["_local_changes"] = lc
+        body = load_anny_from_params(params)
+        with torch.no_grad():
+            sw = measure_grad(body, only=["shoulder_width_cm"])["shoulder_width_cm"].item()
+        values.append(sw)
+
+    max_jump_cm = max(abs(values[i + 1] - values[i]) for i in range(len(values) - 1))
+    span_cm = max(values) - min(values)
+    # Bust should barely affect shoulder width: well under 0.5 cm total swing,
+    # and certainly no >0.2 cm step jumps (which would indicate argmax-style
+    # discontinuity).
+    assert max_jump_cm < 0.2, (
+        f"shoulder_width_cm not smooth under measure-bust-circ-incr sweep: "
+        f"max consecutive jump = {max_jump_cm:.3f} cm (limit 0.2 cm). "
+        f"Values: {values}"
+    )
+    assert span_cm < 0.5, (
+        f"shoulder_width_cm has unexpectedly large dependence on bust: "
+        f"total range = {span_cm:.3f} cm (limit 0.5 cm)."
+    )
+
 
 @pytest.mark.parametrize(
     "delta", [0.0, 0.5, 1.0],
@@ -252,10 +346,16 @@ def test_only_none_returns_all_supported():
 def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
     body = _load("female_average")
+    # neck_cm has no measure_grad path (perpendicular plane sweep); use it as
+    # a stable example of an unsupported key.
+    unsupported = "neck_cm"
+    assert unsupported not in SUPPORTED_KEYS, (
+        f"Pick a different key — {unsupported} is now in SUPPORTED_KEYS"
+    )
     with pytest.raises(ValueError) as exc_info:
-        measure_grad(body, only=["shoulder_width_cm"])
+        measure_grad(body, only=[unsupported])
     msg = str(exc_info.value)
-    assert "shoulder_width_cm" in msg
+    assert unsupported in msg
     for key in SUPPORTED_KEYS:
         assert key in msg, f"SUPPORTED_KEYS entry '{key}' missing from error message"
 

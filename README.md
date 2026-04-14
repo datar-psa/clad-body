@@ -1,6 +1,6 @@
 # clad-body
 
-ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models. Eleven keys are differentiable through PyTorch autograd for gradient-based body fitting.
+ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR](https://github.com/facebookresearch/MHR) parametric body models. Twelve keys are differentiable through PyTorch autograd for gradient-based body fitting.
 
 Anny and MHR give you a 14–18K vertex mesh and nothing to measure it with. SMPL tooling doesn't port over, and the plane-sweep algorithms look simple until you hit convex-hull tape simulation, contour-fragment merging, and ISO-compliant landmark detection for bust/hip/crotch. `clad-body` is that work, done once — 25 anthropometric measurements over circumferences, lengths, and body composition (volume, mass, BMI, body fat), calibrated against real scan data. It's used in production at [Clad](https://clad.you) for size-aware virtual try-on.
 
@@ -54,7 +54,7 @@ m = measure(body)
 
 ### Differentiable path — `measure_grad` (Anny only, experimental)
 
-> **Under active development.** API surface and supported keys may change between minor versions. Eleven keys are differentiable today; more will follow.
+> **Under active development.** API surface and supported keys may change between minor versions. Twelve keys are differentiable today; more will follow.
 
 For autograd-based optimization of the body mesh, use `measure_grad(body)` instead of `measure(body)`. Same input, same key names — but the returned values are PyTorch tensors with autograd history, so you can put them directly into a loss and backprop into the Anny phenotype parameters.
 
@@ -89,6 +89,7 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 | `stomach_cm` | MAE 0.93 cm, P95 2.83 cm, max 3.61 cm (soft-argmin picks a different Z than the reference's 2 mm band scan; residual is inherent Z-choice noise) |
 | `inseam_cm` | RMS 0.06 cm, max 0.10 cm |
 | `sleeve_length_cm` | RMS 0.33 cm, max 0.55 cm |
+| `shoulder_width_cm` | RMS 1.39 cm on 100 random bodies (91 % within ±2 cm). Max 5cm |
 | `upperarm_cm` | ≤ 1 cm |
 | `mass_kg` | ≤ 3 kg |
 | `thigh_cm` | **broken — gradient direction only** (vertex loop under-reports by 3–6 cm; use `measure()` for reporting) |
@@ -108,7 +109,7 @@ Requesting any other key raises `ValueError`. There is no silent numpy fallback 
 #### Parameter sensitivity
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/sensitivity_local_changes.png" alt="Heatmap of |d(measurement)/d(local_change)| averaged across 6 reference bodies — rows are local_changes sorted by total normalised leverage, columns are the 11 supported measurements" width="700">
+  <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/sensitivity_local_changes.png" alt="Heatmap of |d(measurement)/d(local_change)| averaged across 6 reference bodies — rows are local_changes sorted by total normalised leverage, columns are the 12 supported measurements" width="700">
 </p>
 
 Jacobian heatmap for every Anny `local_changes` dimension against every supported measurement — `|d(measurement)/d(param)|` averaged across 6 reference bodies. Darker cells mean the local_change has strong leverage over that measurement; pale cells mean the gradient is near zero and Adam will barely move it. Useful when deciding which params to unfreeze for a given fit target (e.g. optimising `bust_cm` is pointless without `measure-bust-circ-incr` or `torso-scale-horiz-incr` in the active set). Regenerate with `python tools/sensitivity_map.py --output <path>`.

@@ -631,6 +631,23 @@ BASE_MESH_BUST_VERTICES = [1445, 1438, 1855, 1888, 1762, 1798, 8470, 8434, 8560,
 BASE_MESH_THIGH_VERTICES = [6745, 6744, 6743, 6742, 6741, 6740, 6739, 6738, 6737, 6736, 6755, 6754, 6753, 6752, 6751, 6750, 6749, 6748, 6747, 6746]  # BROKEN — see comment above
 BASE_MESH_UPPERARM_VERTICES = [3788, 1710, 1706, 1705, 1701, 1702, 1703, 1704, 1694, 1700, 1695, 1696, 3763, 1697, 1698, 1699, 1709, 1708, 1707, 3850]
 
+# Shoulder width landmark seeds (base-mesh indices). The R/L acromion seeds
+# are NOT used directly — they only anchor the k-ring patch over which the
+# soft acromion does its Z-argmax (the actual argmax vertex drifts off the
+# seed on broad-shoulder males). C7 IS used directly (stable on 100/100
+# random bodies). See findings/shoulder_width_diff.md.
+BASE_MESH_R_ACROMION_SEED = 1557
+BASE_MESH_C7_SURFACE_SEED = 858
+BASE_MESH_L_ACROMION_SEED = 8235
+
+# Soft-acromion hyperparameters. K=2 covers 100 % of observed argmax landings
+# on a 100-body sample. X_BAND mirrors the numpy ±5 cm hard band as a soft
+# Gaussian. TAU is the Z softmax temperature — sharp enough to behave like
+# a hard argmax at the optimum, soft enough to leak gradient to neighbours.
+ACROMION_RING_K = 2
+ACROMION_X_BAND = 0.018          # 18 mm Gaussian half-width
+ACROMION_SOFTMAX_TAU = 0.010     # 10 mm Z softmax temperature
+
 
 def remap_vertex_indices(model, base_mesh_indices):
     """Map base mesh vertex indices to reduced mesh indices.
@@ -641,6 +658,31 @@ def remap_vertex_indices(model, base_mesh_indices):
     """
     base_to_reduced = model.base_mesh_vertex_indices.detach().cpu().numpy().tolist()
     return [base_to_reduced.index(i) for i in base_mesh_indices]
+
+
+def compute_k_ring(model, seed_reduced_idx, k):
+    """Vertex indices within graph distance ≤ k from seed (reduced mesh).
+
+    BFS over the face-adjacency graph. Topology-only — safe to cache on the
+    model. Returns a sorted list of int indices, including the seed.
+    """
+    faces = model.faces.detach().cpu().numpy() if hasattr(model.faces, "detach") else np.asarray(model.faces)
+    n_verts = int(faces.max()) + 1
+    neigh = [set() for _ in range(n_verts)]
+    for a, b, c in faces:
+        neigh[a].update((b, c))
+        neigh[b].update((a, c))
+        neigh[c].update((a, b))
+    frontier = {int(seed_reduced_idx)}
+    visited = {int(seed_reduced_idx)}
+    for _ in range(k):
+        nxt = set()
+        for v in frontier:
+            nxt |= neigh[v]
+        nxt -= visited
+        visited |= nxt
+        frontier = nxt
+    return sorted(visited)
 
 
 def setup_extended_anthro(model):
@@ -658,8 +700,87 @@ def setup_extended_anthro(model):
     anthro.bust_vertex_indices = remap_vertex_indices(model, BASE_MESH_BUST_VERTICES)
     anthro.thigh_vertex_indices = remap_vertex_indices(model, BASE_MESH_THIGH_VERTICES)
     anthro.upperarm_vertex_indices = remap_vertex_indices(model, BASE_MESH_UPPERARM_VERTICES)
+
+    # Shoulder-width landmarks: seeds + per-side k-ring patches for soft-argmax.
+    r_seed, c7_seed, l_seed = remap_vertex_indices(
+        model,
+        [BASE_MESH_R_ACROMION_SEED,
+         BASE_MESH_C7_SURFACE_SEED,
+         BASE_MESH_L_ACROMION_SEED],
+    )
+    anthro.shoulder_c7_index = c7_seed  # C7 is stable — used directly
+    anthro.shoulder_r_acromion_ring = compute_k_ring(model, r_seed, ACROMION_RING_K)
+    anthro.shoulder_l_acromion_ring = compute_k_ring(model, l_seed, ACROMION_RING_K)
+    # Bone indices for the per-body lateral X anchor (midpoint of upperarm01).
+    bone_labels = list(model.bone_labels)
+    anthro.shoulder_r_upperarm_bone = bone_labels.index("upperarm01.R")
+    anthro.shoulder_l_upperarm_bone = bone_labels.index("upperarm01.L")
+
     model._extended_anthro = anthro
     return anthro
+
+
+def compute_soft_acromion(verts, ring_indices, anchor_x,
+                          x_band=ACROMION_X_BAND, tau=ACROMION_SOFTMAX_TAU):
+    """Differentiable acromion landmark — soft equivalent of ``find_acromion``.
+
+    Soft analogue of "highest Z within a lateral band around the shoulder":
+
+        log_w = Z / tau − (X − anchor_x)² / (2 · x_band²)
+
+    Returns the softmax-weighted average position over ``ring_indices``.
+    The Gaussian X term excludes medial vertices on the trapezius hump
+    (which outrank the bony shoulder tip on Z alone) without a hard mask.
+
+    Args:
+        verts: (1, V, 3) tensor — axis 0 = lateral X, axis 2 = Z.
+        ring_indices: reduced-mesh vertex indices for the search patch.
+        anchor_x: (1, 1) tensor — lateral anchor (typically the upperarm01
+            bone-midpoint X, so the band drifts via LBS with body shape).
+    """
+    candidates = verts[:, ring_indices]
+    z = candidates[:, :, 2]
+    x = candidates[:, :, 0]
+    log_w = z / tau - ((x - anchor_x) ** 2) / (2.0 * x_band ** 2)
+    weights = torch.softmax(log_w, dim=-1)
+    return torch.sum(weights.unsqueeze(-1) * candidates, dim=1)
+
+
+def compute_shoulder_arc_length(verts, anthro, model, n_samples=30,
+                                x_band=ACROMION_X_BAND,
+                                tau=ACROMION_SOFTMAX_TAU):
+    """ISO 8559-1 §5.4.2 shoulder arc length, fully differentiable.
+
+    Soft acromions on each side + cached C7 vertex + quadratic curve through
+    (R, C7, L), sampled at ``n_samples`` points; segment norms summed.
+    Per-side X anchor = midpoint of ``upperarm01.{head, tail}`` (the lateral
+    shoulder edge — both endpoints move via LBS with shoulder breadth).
+
+    ``model._last_bone_heads`` / ``_last_bone_tails`` must be populated by
+    the immediately preceding forward pass (``return_bone_ends=True``).
+    """
+    heads = model._last_bone_heads[0]
+    tails = model._last_bone_tails[0]
+    r_anchor = 0.5 * (heads[anthro.shoulder_r_upperarm_bone, 0:1]
+                      + tails[anthro.shoulder_r_upperarm_bone, 0:1]).unsqueeze(0)
+    l_anchor = 0.5 * (heads[anthro.shoulder_l_upperarm_bone, 0:1]
+                      + tails[anthro.shoulder_l_upperarm_bone, 0:1]).unsqueeze(0)
+
+    P_r = compute_soft_acromion(verts, anthro.shoulder_r_acromion_ring,
+                                r_anchor, x_band=x_band, tau=tau)
+    P_l = compute_soft_acromion(verts, anthro.shoulder_l_acromion_ring,
+                                l_anchor, x_band=x_band, tau=tau)
+    P_c7 = verts[:, anthro.shoulder_c7_index]
+
+    # Quadratic through (R at t=0, C7 at t=0.5, L at t=1) — closed form.
+    a = 2.0 * P_r + 2.0 * P_l - 4.0 * P_c7
+    b = 4.0 * P_c7 - 3.0 * P_r - P_l
+    c = P_r
+    t = torch.linspace(0.0, 1.0, n_samples, dtype=verts.dtype, device=verts.device)
+    t2 = t.unsqueeze(-1)
+    curve = a.unsqueeze(1) * (t2 ** 2) + b.unsqueeze(1) * t2 + c.unsqueeze(1)
+    segs = curve[:, 1:] - curve[:, :-1]
+    return torch.sum(torch.linalg.norm(segs, dim=-1), dim=-1).squeeze(0)
 
 
 def compute_loop_circumference(verts, vertex_indices):
@@ -1126,6 +1247,7 @@ SUPPORTED_KEYS = frozenset({
     "hip_cm",
     "thigh_cm",
     "upperarm_cm",
+    "shoulder_width_cm",
     "inseam_cm",
     "sleeve_length_cm",
     "mass_kg",
@@ -1189,7 +1311,16 @@ def measure_grad(body, *, pose=None, only=None):
     Supported keys (Anny):
         ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
         ``stomach_cm``, ``hip_cm``, ``thigh_cm``, ``upperarm_cm``,
-        ``inseam_cm``, ``sleeve_length_cm``, ``mass_kg``.
+        ``shoulder_width_cm``, ``inseam_cm``, ``sleeve_length_cm``,
+        ``mass_kg``.
+
+    Note on shoulder_width_cm:
+        Soft-argmax acromions in a Gaussian X-band anchored at the
+        upperarm01 bone midpoint, plus a closed-form quadratic curve
+        through (R, C7, L). RMS 1.4 cm and R²=0.96 vs the numpy ISO
+        reference on 100 random bodies, and SMOOTHER than the reference
+        on parameter sweeps (no argmax jumps). See
+        findings/shoulder_width_diff.md.
 
     Note on mass_kg:
         Computed as ``volume(verts) × _MEDIAN_DENSITY[gender]`` where
@@ -1314,6 +1445,12 @@ def _measure_grad_from_verts(model, verts, *, requested):
         )
         if "upperarm_cm" in requested:
             result["upperarm_cm"] = upperarm_loop_cm
+
+    # ── shoulder_width_cm — soft-argmax acromions + quadratic arc ────────────
+    if "shoulder_width_cm" in requested:
+        result["shoulder_width_cm"] = (
+            compute_shoulder_arc_length(verts, anthro, model) * 100
+        )
 
     # ── inseam_cm — perineum vertex pair (no joints needed) ──────────────────
     if "inseam_cm" in requested:
