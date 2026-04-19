@@ -4,6 +4,8 @@ ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR]
 
 Anny and MHR give you a 14–18K vertex mesh and nothing to measure it with. SMPL tooling doesn't port over, and the plane-sweep algorithms look simple until you hit convex-hull tape simulation, contour-fragment merging, and ISO-compliant landmark detection for bust/hip/crotch. `clad-body` is that work, done once — 25 anthropometric measurements over circumferences, lengths, and body composition (volume, mass, BMI, body fat), calibrated against real scan data. It's used in production at [Clad](https://clad.you) for size-aware virtual try-on.
 
+> **Prefer REST?** Same engine is available as a hosted API at [**api.clad.you**](https://api.clad.you) — questionnaire or photo → GLB mesh + the ISO measurements below. Free tier (5 calls/week), grab a key at [clad.you/developers](https://clad.you/developers). Good fit if you want the body model without the Python install or the Anny model weights.
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
   <br>
@@ -245,9 +247,10 @@ measure(body, device=None)                       # auto: CUDA if available
 
 Without extras, only numpy, scipy, and trimesh are required.
 
-## Demo
+## Try it
 
-Try the full pipeline at [clad.you/size-aware/size-me](https://clad.you/size-aware/size-me).
+- **Consumer demo** — full pipeline (questionnaire → body → virtual try-on) at [clad.you/size-aware/size-me](https://clad.you/size-aware/size-me).
+- **REST API** — same body model + these measurements behind a bearer-token API at [api.clad.you](https://api.clad.you). Swagger UI on the root; 5 calls/week free tier. Key management at [clad.you/developers](https://clad.you/developers).
 
 ## Background
 
