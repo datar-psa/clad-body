@@ -35,19 +35,13 @@ The legacy entry points `generate_anny_mesh_from_params()`, `measure_body_from_v
 
 `vertices` are XY-centred (via `reposition_apose`), but Anny bone positions from the forward pass are not. `_xy_offset` (np.ndarray, shape (2,)) stores the centering offset so `measure()` can align joint positions to the mesh. Handled automatically — callers don't need to think about it. `model` and `mesh` are lazy attributes.
 
-## Soft circumference — bust_cm, underbust_cm, hip_cm, thigh_cm (differentiable)
+## Soft circumference (differentiable bust / underbust / hip / thigh / neck)
 
-**Differentiable through edge-plane intersection + angular binning.** `bust_cm`, `underbust_cm`, `hip_cm`, and `thigh_cm` in `measure_grad` use soft sigmoid gates on edge intersections with a horizontal cutting plane, angular binning with r-biased softmax per bin, recentered polar coordinates, and convex hull perimeter. Implementation: [`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py).
-
-**Recentering is critical.** The polar origin is the weighted centroid of crossing points (detached from the gradient), not the mesh XY origin. Without recentering, Anny's D-shaped cross-section (XY origin sits ~3 cm from the back surface, ~25 cm from the front) leaves 71% of bodies with empty back bins. 
-
-**Convex hull perimeter = tape measure.** The convex hull of the 72-bin polygon bridges concavities (breast cleavage for bust, gluteal cleft for hips). Hull vertex selection is non-differentiable but gradients flow through the selected vertex positions. With convex hull, bust MAE drops to 0.06 cm (A≈1.0, near-identity calibration).
-
-**Hip Z anchor:** Hip height uses the mean Z of `BASE_MESH_HIP_VERTICES` (28 vertices at ~52% height, level of greatest buttock prominence). At hip level arms are far above, so the torso-only edge set naturally includes all hip geometry.
-
-**Thigh Z anchor + per-leg edges:** Thigh height is `0.43 × mesh_height` — exactly where the ISO plane-sweep reference is hard-capped in `measure_thigh`, giving near-identity agreement (MAE 0.06 cm, max 0.18 cm on 100 random bodies). Unlike bust/hip, thigh uses **single-leg edge sets** (`_build_leg_edges(model, 'L'|'R')`) so the angular bins around one thigh don't mix in crossings from the other leg. Left and right circumferences are averaged.
-
-**Topology-only caching:** `_build_torso_edges`, `_build_breast_idx`, `_build_hip_idx`, and `_build_leg_edges_L/R` are cached on the model instance — they depend only on skinning weights and face connectivity, not on phenotype parameters. Safe to reuse across forward passes.
+Algorithm, per-key anchors, topology caches, calibration tables, and the
+neck tilted-plane variant live in [`../findings/soft_circumference.md`](../findings/soft_circumference.md). Neck-specific
+ISO/Navy research and the height-proportional-offset derivation are in
+[`../findings/soft_neck.md`](../findings/soft_neck.md). Implementation:
+[`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py).
 
 ## Group C — sleeve length (ISO 8559-1 §5.4.14 + §5.4.15)
 

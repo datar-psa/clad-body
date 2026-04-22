@@ -49,6 +49,31 @@ BUST_A, BUST_B = 0.9997, 0.12
 UB_A, UB_B = 0.9830, 1.86
 HIP_A, HIP_B = 1.0039, 0.47
 
+# Neck — tilted soft circumference perpendicular to the neck bone axis, with
+# the plane origin shifted down the neck axis from the ``neck02`` bone head
+# by ``NECK_BELOW_ADAMS_APPLE_COEF × body_height``.
+#
+# ISO 8559-1 §5.3.2 specifies neck girth "at a point just below the bulge at
+# the thyroid cartilage (Adam's apple), measured perpendicular to the
+# longitudinal axis of the neck" — explicitly below the bulge, not at it.
+# Hodgdon & Beckett (1984, NHRC Report 84-11, which calibrated the Navy BF
+# coefficients used in :mod:`clad_body.measure.anny`) measured "just below
+# the larynx (i.e., Adam's apple) with the tape sloping slightly downward
+# to the front."  Both protocols point to the C6 level, ~1.5-2 cm inferior
+# to the Adam's apple bulge.  Anny's ``neck02`` bone head sits AT the Adam's
+# apple, so we shift downward along the neck axis.
+#
+# The coefficient is height-proportional rather than absolute because the
+# offset is structurally tied to body scale: foot verts extend below the
+# foot bone head by a distance that grows with total body size (longer
+# feet → bigger gap).  Fitting on 100 random bodies from data_10k_42 gives
+# a remarkably tight ratio: offset / body_height = 0.01014 ± 0.00048 (CV
+# 4.7 %).  Using the fitted coefficient reaches MAE 0.19 cm / MAX 0.56 cm
+# against the :func:`measure_neck` reference — 2.4× better than a fixed
+# absolute offset (0.46 / 1.45 cm on the same sample).
+NECK_A, NECK_B = 1.0, 0.0
+NECK_BELOW_ADAMS_APPLE_COEF = 0.0102  # fraction of body height
+
 # Thigh — soft circumference on per-leg edges at 43 % of body height, which
 # is where the ISO plane-sweep reference ALWAYS lands (the sweep is hard-
 # capped at 0.43 × height in :func:`~clad_body.measure._circumferences.measure_thigh`,
@@ -137,6 +162,52 @@ def _build_breast_idx(model):
         bw += np.where(vbi == bi, vbw, 0).sum(axis=1)
     result = torch.tensor(np.where(bw > 0.3)[0], dtype=torch.long)
     model._soft_circ_breast_idx = result
+    return result
+
+
+def _build_neck_edges(model, faces):
+    """Build edge index tensor for the neck submesh.
+
+    A face is kept only if all three vertices have summed skinning weight
+    > 0.3 on ``neck01`` or ``neck02``. This excludes head/chin vertices
+    (which would cross a tilted cutting plane at chin level) and
+    clavicle/shoulder vertices (which would cross when the plane tilts
+    forward). Topology-only — depends on skinning weights, not phenotype,
+    so the result is cached on the model instance.
+
+    Cached on ``model._soft_circ_neck_edges``.
+
+    Returns (E, 2) long tensor.
+    """
+    cached = getattr(model, "_soft_circ_neck_edges", None)
+    if cached is not None:
+        return cached
+
+    labels = list(model.bone_labels)
+    try:
+        neck_bone_idx = [labels.index("neck01"), labels.index("neck02")]
+    except ValueError as e:
+        raise RuntimeError(f"Anny model missing neck bone: {e}")
+
+    vbw = model.vertex_bone_weights.detach().cpu().numpy()
+    vbi = model.vertex_bone_indices.detach().cpu().numpy()
+    bw = np.zeros(vbw.shape[0])
+    for bi in neck_bone_idx:
+        bw += np.where(vbi == bi, vbw, 0).sum(axis=1)
+    neck_mask = bw > 0.3
+
+    faces_np = faces.detach().cpu().numpy() if hasattr(faces, "detach") else np.asarray(faces)
+    face_all_neck = neck_mask[faces_np].all(axis=1)
+    neck_faces = faces_np[face_all_neck]
+
+    edges_set = set()
+    for f in neck_faces:
+        for i in range(3):
+            a, b = int(f[i]), int(f[(i + 1) % 3])
+            edges_set.add((min(a, b), max(a, b)))
+
+    result = torch.tensor(list(edges_set), dtype=torch.long)
+    model._soft_circ_neck_edges = result
     return result
 
 
@@ -313,6 +384,122 @@ def soft_circumference(verts_zup, edge_indices, z):
     return circ
 
 
+def soft_circumference_plane(verts, edge_indices, origin, normal):
+    """Differentiable circumference along an arbitrary cutting plane.
+
+    Generalization of :func:`soft_circumference` — accepts an arbitrary plane
+    ``(origin, normal)`` instead of a horizontal Z level. Used for the neck
+    (ISO §5.3.2 requires perpendicular-to-neck-axis slicing; the neck tilts
+    ~15-20° forward from vertical, so a horizontal slice overestimates by
+    5-6 %).
+
+    Works in whichever frame ``verts`` is expressed in — the caller is
+    responsible for supplying ``origin`` and ``normal`` in the same frame.
+    Bone positions from ``model._last_bone_heads/_tails`` are in the same
+    frame as ``output["vertices"]``, so passing them directly is safe.
+
+    Same machinery as the horizontal version: sigmoid gate on edge-plane
+    crossings, angular binning with r-biased softmax, recentered polar
+    coordinates, convex hull perimeter. The only difference is the
+    signed-distance computation (``dot(p - origin, normal)`` instead of
+    ``z - z_plane``) and a Gram-Schmidt 2D frame on the plane.
+
+    Args:
+        verts: (1, V, 3) tensor — vertex positions in any frame.
+        edge_indices: (E, 2) long tensor — edges to intersect with the plane.
+        origin: (3,) tensor or tuple — any point on the plane.
+        normal: (3,) tensor or tuple — plane normal (normalized internally).
+
+    Returns:
+        Scalar torch tensor — circumference in the same length units as
+        ``verts`` (typically metres).
+    """
+    if not isinstance(origin, torch.Tensor):
+        origin = torch.as_tensor(origin, dtype=verts.dtype, device=verts.device)
+    if not isinstance(normal, torch.Tensor):
+        normal = torch.as_tensor(normal, dtype=verts.dtype, device=verts.device)
+    normal = normal / (torch.linalg.norm(normal) + 1e-10)
+
+    v = verts[0]
+    va = v[edge_indices[:, 0]]
+    vb = v[edge_indices[:, 1]]
+
+    # Signed distance from the plane for each endpoint
+    sa = ((va - origin) * normal).sum(dim=-1)
+    sb = ((vb - origin) * normal).sum(dim=-1)
+    ds = sb - sa
+    t = -sa / (ds + 1e-10)
+
+    # Same soft gates as the horizontal variant — TAU and SIGMA_Z now act
+    # along the plane normal rather than world Z, but the numeric scale
+    # (5 mm / 5 cm) is geometrically equivalent.
+    w = torch.sigmoid(t / TAU) * torch.sigmoid((1.0 - t) / TAU)
+    w = w * torch.sigmoid(torch.abs(ds) / SIGMA_Z - 1.0)
+
+    # 3D intersection points along each crossing edge
+    t_c = t.clamp(0, 1)
+    p = va + t_c.unsqueeze(-1) * (vb - va)
+
+    # Plane-local 2D frame via Gram-Schmidt. Pick the world axis that's
+    # least parallel to ``normal`` as the reference — guarantees a
+    # well-conditioned ``u`` even for tilted planes. Under no_grad so the
+    # discrete argmin can't introduce gradient noise; ``u`` and ``v`` still
+    # flow gradients into r, theta via the forward arithmetic.
+    with torch.no_grad():
+        ax = int(torch.argmin(torch.abs(normal)).item())
+        ref = torch.zeros(3, dtype=v.dtype, device=v.device)
+        ref[ax] = 1.0
+    u = ref - (ref * normal).sum() * normal
+    u = u / (torch.linalg.norm(u) + 1e-10)
+    vv = torch.linalg.cross(normal, u)
+
+    # Project intersection points into the plane-local (u, v) frame
+    p_rel = p - origin
+    px = (p_rel * u).sum(dim=-1)
+    py = (p_rel * vv).sum(dim=-1)
+
+    # Recenter polar origin to weighted crossing centroid (detached — same
+    # rationale as in the horizontal version).
+    w_sum = w.sum() + 1e-10
+    cx = ((w * px).sum() / w_sum).detach()
+    cy = ((w * py).sum() / w_sum).detach()
+
+    dx, dy = px - cx, py - cy
+    r = torch.sqrt(dx ** 2 + dy ** 2 + 1e-10)
+    theta = torch.atan2(dy, dx)
+
+    # Angular binning — identical to the horizontal variant
+    bin_centers = torch.linspace(
+        -np.pi, np.pi * (1 - 2.0 / N_BINS), N_BINS,
+        device=v.device, dtype=v.dtype,
+    )
+    sig_th = (2 * np.pi / N_BINS) * 0.6
+
+    ang_diff = theta.unsqueeze(-1) - bin_centers.unsqueeze(0)
+    ang_diff = torch.atan2(torch.sin(ang_diff), torch.cos(ang_diff))
+    ang_aff = torch.exp(-ang_diff ** 2 / (2 * sig_th ** 2))
+
+    comb_w = w.unsqueeze(-1) * ang_aff
+    masked_w = comb_w * (w.unsqueeze(-1) > 0.01).float()
+    log_w = torch.log(masked_w + 1e-30) + r.unsqueeze(-1) / TAU
+    log_max = log_w.max(dim=0, keepdim=True).values
+    exp_w = torch.exp(log_w - log_max) * (masked_w > 1e-20).float()
+    r_bin = (r.unsqueeze(-1) * exp_w).sum(0) / (exp_w.sum(0) + 1e-10)
+
+    # Polygon in plane-local coordinates, convex hull perimeter
+    pts = torch.stack([
+        cx + r_bin * torch.cos(bin_centers),
+        cy + r_bin * torch.sin(bin_centers),
+    ], dim=-1)
+
+    try:
+        hull_idx = ConvexHull(pts.detach().cpu().numpy()).vertices
+        hp = pts[hull_idx]
+        circ = torch.sum(torch.linalg.norm(torch.roll(hp, -1, 0) - hp, dim=-1))
+    except Exception:
+        circ = torch.sum(torch.linalg.norm(torch.roll(pts, -1, 0) - pts, dim=-1))
+
+    return circ
 
 
 def measure_bust_underbust(model, verts):
@@ -366,6 +553,70 @@ def measure_hip(model, verts):
     hz = hip_z(model, verts_zup)
     raw_hip = soft_circumference(verts_zup, edges, hz) * 100
     return {"hip_cm": HIP_A * raw_hip + HIP_B}
+
+
+def measure_neck_soft(model, verts):
+    """Compute differentiable neck circumference perpendicular to neck axis.
+
+    ISO 8559-1 §5.3.2: girth of the neck at the thyroid cartilage (Adam's
+    apple), measured perpendicular to the neck's longitudinal axis.
+
+    The neck tilts ~15-20° forward from vertical, so a horizontal slice would
+    overestimate by 5-6 %. This function uses :func:`soft_circumference_plane`
+    with:
+
+    - ``origin = neck02`` bone head (= ``neck01`` tail ≈ Adam's apple level,
+      ~86 % of body height).
+    - ``normal = head - neck01`` head (the full neck-chain direction, from
+      the base of the neck up to the base of the skull).
+
+    Both anchors come from ``model._last_bone_heads`` which is populated by
+    the :func:`measure_grad` forward pass when ``return_bone_ends=True``.
+    Gradients flow through the plane anchor and the plane normal via LBS,
+    and through the vertex positions via blendshapes + LBS.
+
+    Args:
+        model: Anny model with ``_last_bone_heads`` populated by a forward
+            pass that used ``return_bone_ends=True``.
+        verts: (1, V, 3) raw Anny vertices (same frame as the stored bone
+            positions — no Y-up/Z-up conversion applied here).
+
+    Returns:
+        dict with ``neck_cm`` as 0-dim torch tensor (cm).
+    """
+    heads = getattr(model, "_last_bone_heads", None)
+    if heads is None:
+        raise RuntimeError(
+            "measure_neck_soft requires model._last_bone_heads — run a "
+            "forward pass with return_bone_ends=True first"
+        )
+
+    labels = list(model.bone_labels)
+    try:
+        neck01_i = labels.index("neck01")
+        neck02_i = labels.index("neck02")
+        head_i = labels.index("head")
+    except ValueError as e:
+        raise RuntimeError(f"Anny model missing neck/head bone: {e}")
+
+    neck_base = heads[0, neck01_i]   # base of neck (C7-ish)
+    neck_mid = heads[0, neck02_i]    # Adam's apple level (= neck01 tail)
+    head_pos = heads[0, head_i]      # base of skull
+    axis = head_pos - neck_base
+    axis_unit = axis / (torch.linalg.norm(axis) + 1e-10)
+
+    # Shift the plane origin down the neck axis by a fraction of body height
+    # to land at the ISO §5.3.2 "just below the Adam's apple" level.  See the
+    # module docstring at ``NECK_BELOW_ADAMS_APPLE_COEF`` for the calibration
+    # and rationale.  ``body_height`` uses the same verts max/min pattern as
+    # ``thigh_z``, so the gradient flows through the crown/sole vertices
+    # consistent with the rest of this module.
+    body_height = verts[0, :, 2].max() - verts[0, :, 2].min()
+    origin = neck_mid - (NECK_BELOW_ADAMS_APPLE_COEF * body_height) * axis_unit
+
+    edges = _build_neck_edges(model, model.faces).to(verts.device)
+    raw_neck_cm = soft_circumference_plane(verts, edges, origin, axis) * 100
+    return {"neck_cm": NECK_A * raw_neck_cm + NECK_B}
 
 
 def _build_leg_edges(model, side):

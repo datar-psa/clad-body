@@ -103,6 +103,16 @@ TOLERANCE_STOMACH_CM = 4.0
 # checked separately in test_mass_kg_matches_volume_times_median_density.
 TOLERANCE_MASS_KG = 3.1
 
+# neck_cm in measure_grad slices perpendicular to the neck axis at a height-
+# proportional offset below neck02 bone head (the Adam's apple anchor), per
+# ISO §5.3.2 "just below the bulge."  Calibrated against measure() on 100
+# random bodies from data_10k_42 (MAE 0.19 cm, P95 0.44 cm, max 0.56 cm);
+# re-verified on 999 bodies (MAE 0.20 cm, P95 0.45 cm, max 1.01 cm).
+# Testdata max observed: 0.26 cm.  Tolerance 0.6 cm = ~2× that, room for
+# float precision drift without masking real regressions. See
+# NECK_BELOW_ADAMS_APPLE_COEF in _soft_circ.py for the derivation.
+TOLERANCE_NECK_CM = 0.6
+
 _KEY_TOLERANCE = {
     "bust_cm": TOLERANCE_BUST_CM,
     "underbust_cm": TOLERANCE_UNDERBUST_CM,
@@ -113,6 +123,7 @@ _KEY_TOLERANCE = {
     "inseam_cm": TOLERANCE_INSEAM_CM,
     "sleeve_length_cm": TOLERANCE_SLEEVE_CM,
     "shoulder_width_cm": TOLERANCE_SHOULDER_WIDTH_CM,
+    "neck_cm": TOLERANCE_NECK_CM,
     "mass_kg": TOLERANCE_MASS_KG,
 }
 
@@ -347,9 +358,9 @@ def test_only_none_returns_all_supported():
 def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
     body = _load("female_average")
-    # neck_cm has no measure_grad path (perpendicular plane sweep); use it as
-    # a stable example of an unsupported key.
-    unsupported = "neck_cm"
+    # knee_cm has no measure_grad path (plane sweep looking for two separated
+    # leg contours); use it as a stable example of an unsupported key.
+    unsupported = "knee_cm"
     assert unsupported not in SUPPORTED_KEYS, (
         f"Pick a different key — {unsupported} is now in SUPPORTED_KEYS"
     )

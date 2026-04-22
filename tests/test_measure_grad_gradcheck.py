@@ -161,6 +161,8 @@ LOOSE_PAIRS = [
     ("sleeve_length_cm", "proportions"),
     ("shoulder_width_cm", "height"),
     ("shoulder_width_cm", "proportions"),
+    ("neck_cm",         "weight"),
+    ("neck_cm",         "height"),
 ]
 
 # Sign-only -- stomach soft-argmin picks a different Z than the reference on

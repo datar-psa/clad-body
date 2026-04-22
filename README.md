@@ -4,7 +4,7 @@ ISO 8559-1 body measurements for [Anny](https://github.com/naver/anny) and [MHR]
 
 Anny and MHR give you a 14–18K vertex mesh and nothing to measure it with. SMPL tooling doesn't port over, and the plane-sweep algorithms look simple until you hit convex-hull tape simulation, contour-fragment merging, and ISO-compliant landmark detection for bust/hip/crotch. `clad-body` is that work, done once — 25 anthropometric measurements over circumferences, lengths, and body composition (volume, mass, BMI, body fat), calibrated against real scan data. It's used in production at [Clad](https://clad.you) for size-aware virtual try-on.
 
-> **Prefer REST?** Same engine is available as a hosted API at [**api.clad.you**](https://api.clad.you) — questionnaire or photo → GLB mesh + the ISO measurements below. Free tier (5 calls/week), grab a key at [clad.you/developers](https://clad.you/developers). Good fit if you want the body model without the Python install or the Anny model weights.
+> Also exposed as a REST API at [**api.clad.you**](https://api.clad.you) — questionnaire or photo in, GLB + measurements out. Free for now while we work out whether anyone actually wants this; key at [clad.you/developers](https://clad.you/developers).
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/datar-psa/clad-body/main/assets/body_rotation.gif" alt="Anny body rotating with ISO 8559-1 circumference measurement contours" width="400">
@@ -95,12 +95,13 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 | `upperarm_cm` | ≤ 1 cm |
 | `mass_kg` | ≤ 3 kg |
 | `thigh_cm` | MAE 0.06 cm, max 0.18 cm (100 random bodies) |
+| `neck_cm` | MAE 0.20 cm, P95 0.45 cm, max 1.01 cm (999 bodies). Tilted plane perpendicular to neck axis, anchor `0.0102 × body_height` below neck02 bone head (ISO §5.3.2 "just below the Adam's apple"). |
 
 #### Circumference = convex hull perimeter, not contour perimeter
 
 Both `measure()` and `measure_grad` report **convex hull circumference**, not the raw cross-section perimeter. This matches ISO 8559-1: a real measuring tape bridges across concavities (e.g., cleavage between breasts, armpit crease) rather than dipping into them. The convex hull perimeter is always ≤ the raw contour perimeter — the difference is most visible at the bust on larger cup sizes where the cleavage concavity can shorten the measurement by 1-3 cm compared to following the actual surface.
 
-`measure_grad` builds a 72-point polygon via differentiable soft edge-plane intersection, then takes its `scipy.spatial.ConvexHull` perimeter. This is used for bust, underbust, hip, and stomach — each at its respective anatomical height. Every `measure_grad()` call recomputes the hull from scratch (new forward pass → new polygon → new hull). The hull decides *which* polygon vertices to keep (discrete, like `argmax` or `tensor[mask]`) — but the perimeter of those vertices is a plain sum of `torch.linalg.norm` over their positions, so `loss.backward()` flows gradients through the kept vertices back to the Anny phenotype params. Dropped vertices (inside the hull, e.g., cleavage or gluteal cleft bins) get zero gradient — correct, since they don't affect the tape measure. The hull indices can change between optimization steps if the body shape changes enough, but the perimeter value is continuous at those transitions so the loss doesn't jump. See `clad_body/measure/_soft_circ.py`.
+`measure_grad` builds a 72-point polygon via differentiable soft edge-plane intersection, then takes its `scipy.spatial.ConvexHull` perimeter. This is used for bust, underbust, hip, stomach, thigh, and neck — each at its respective anatomical level. For bust/hip/stomach/thigh the cutting plane is horizontal (`soft_circumference`); for the neck it tilts to perpendicular-to-the-neck-axis (`soft_circumference_plane`) because a horizontal slice overestimates the neck by 5-6 % (the neck leans ~15-20° forward). Every `measure_grad()` call recomputes the hull from scratch (new forward pass → new polygon → new hull). The hull decides *which* polygon vertices to keep (discrete, like `argmax` or `tensor[mask]`) — but the perimeter of those vertices is a plain sum of `torch.linalg.norm` over their positions, so `loss.backward()` flows gradients through the kept vertices back to the Anny phenotype params. Dropped vertices (inside the hull, e.g., cleavage or gluteal cleft bins) get zero gradient — correct, since they don't affect the tape measure. The hull indices can change between optimization steps if the body shape changes enough, but the perimeter value is continuous at those transitions so the loss doesn't jump. See `clad_body/measure/_soft_circ.py`.
 
 For `stomach_cm` the cutting-plane height is itself differentiable: a soft-argmin over torso vertex Y (most anterior = most negative) in the belly Z-range picks the height of maximum anterior protrusion, and one `soft_circumference` is taken there. See `measure_stomach_soft` in the same file. The Z selection can drift by 1–2 cm from the reference's 2 mm band-scan argmax on bodies where multiple vertex clusters have near-identical anterior Y — which translates to ~3 cm of circumference error because the body tapers rapidly in the belly region. This is why `stomach_cm` has looser tolerance than the other soft-circ keys.
 
@@ -250,7 +251,7 @@ Without extras, only numpy, scipy, and trimesh are required.
 ## Try it
 
 - **Consumer demo** — full pipeline (questionnaire → body → virtual try-on) at [clad.you/size-aware/size-me](https://clad.you/size-aware/size-me).
-- **REST API** — same body model + these measurements behind a bearer-token API at [api.clad.you](https://api.clad.you). Swagger UI on the root; 5 calls/week free tier. Key management at [clad.you/developers](https://clad.you/developers).
+- **REST API** — same body model + these measurements behind a bearer-token API at [api.clad.you](https://api.clad.you). Swagger UI on the root. Free while we gauge whether it's useful; key management at [clad.you/developers](https://clad.you/developers).
 
 ## Background
 

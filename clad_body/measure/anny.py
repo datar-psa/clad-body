@@ -1250,6 +1250,7 @@ SUPPORTED_KEYS = frozenset({
     "shoulder_width_cm",
     "inseam_cm",
     "sleeve_length_cm",
+    "neck_cm",
     "mass_kg",
 })
 
@@ -1312,7 +1313,7 @@ def measure_grad(body, *, pose=None, only=None):
         ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
         ``stomach_cm``, ``hip_cm``, ``thigh_cm``, ``upperarm_cm``,
         ``shoulder_width_cm``, ``inseam_cm``, ``sleeve_length_cm``,
-        ``mass_kg``.
+        ``neck_cm``, ``mass_kg``.
 
     Note on shoulder_width_cm:
         Soft-argmax acromions in a Gaussian X-band anchored at the
@@ -1462,6 +1463,12 @@ def _measure_grad_from_verts(model, verts, *, requested):
         result["sleeve_length_cm"] = measure_sleeve_length_from_joints(
             joints_torch, upperarm_loop_cm
         )
+
+    # ── neck_cm (tilted soft circumference perpendicular to neck axis) ───────
+    if "neck_cm" in requested:
+        from ._soft_circ import measure_neck_soft
+        nk = measure_neck_soft(model, verts)
+        result["neck_cm"] = nk["neck_cm"]
 
     # ── mass_kg ───────────────────────────────────────────────────────────────
     # Plain V × ρ_median(gender) — fully differentiable. Differs from measure()
