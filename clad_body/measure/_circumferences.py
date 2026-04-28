@@ -527,42 +527,113 @@ def measure_knee(mesh, height, step=0.002):
     return best_circ * 100, best_z, best_z / height * 100
 
 
-def measure_calf(mesh, height, step=0.002):
+def measure_calf(mesh, height, joints=None, step=0.002):
     """Measure calf circumference — maximum lower leg girth (ISO 8559-1 §5.3.24).
 
-    Sweeps from 16-26% height looking for Z levels where there are exactly
-    2 separate leg contours of similar size. Returns the maximum average
-    circumference (fullest part of the calf muscle).
+    Horizontal plane sweep over the lower leg using the same convex-hull
+    tape-measure simulation as the rest of the limb sweeps. Finds the
+    global max within an anatomical search range, with a sanity check
+    that the max is a real local peak rather than a boundary clip.
+
+    Joint-anchored mode (knee + ankle joints provided): sweeps
+    ``z ∈ [ankle_z + 6 cm, knee_z − 4 cm]``, where the 6 cm ankle offset
+    clears the malleolus and the 4 cm knee offset clears the kneecap.
+    The natural calf-belly maximum sits 9–11 cm below the knee on
+    untuned bodies, comfortably interior to this range.
+
+    Peak vs. boundary: if the max lands within one step of the upper
+    bound (``z_max − step``), the lower leg is monotonically widening
+    toward the knee — there is no real calf belly. This happens on
+    tuned bodies where the optimizer has deflated the calf as a side
+    effect of inflating the thighs/hips. Reporting the boundary value
+    would put the measurement on the upper lower-leg (essentially the
+    popliteal region), which is anatomically misleading. Instead, we
+    fall back to ``knee_z − 0.30 × (knee_z − ankle_z)`` — the typical
+    gastrocnemius-peak position (~30 % down from the knee) — and report
+    the girth there. The value is no longer a true ISO max, but it's
+    where a tape would land on a normal anatomy and the visualization is
+    sensible. The reported ``calf_cm`` will be smaller than the boundary
+    clip, honestly reflecting the deflated geometry.
+
+    Without joints, falls back to a fixed 16–26 % height range with no
+    peak detection — the legacy behavior, vulnerable to the boundary
+    case but adequate for un-tuned bodies.
 
     Returns:
         (circ_cm, z, pct) or (0, 0, 0) if not found.
     """
+    z_min, z_max, fallback_z = _calf_search_range(joints, height)
+    if z_max <= z_min:
+        return 0, 0, 0
+
     slicer = MeshSlicer(mesh)
     best_circ = 0
     best_z = 0
 
-    for pct in np.arange(0.16, 0.26, step / height):
-        z = height * pct
-        contours = slicer.limb_contours_at_z(z)
-        if len(contours) < 2:
-            continue
-
-        c1, xc1, _ = contours[0]
-        c2, xc2, _ = contours[1]
-
-        if xc1 * xc2 >= 0:  # same side
-            continue
-        if min(c1, c2) < 0.5 * max(c1, c2):  # too different
-            continue
-
-        avg_circ = (c1 + c2) / 2
+    for z in np.arange(z_min, z_max, step):
+        avg_circ = _two_leg_avg_circumference(slicer, z)
         if avg_circ > best_circ:
             best_circ = avg_circ
             best_z = z
 
     if best_circ == 0:
         return 0, 0, 0
+
+    # Boundary detection: max at the upper bound means no true calf-belly
+    # peak exists. Use the anatomical fallback position when available.
+    at_upper_bound = best_z >= z_max - step * 1.5
+    if fallback_z is not None and at_upper_bound:
+        fb_circ = _two_leg_avg_circumference(slicer, fallback_z)
+        if fb_circ > 0:
+            best_z = fallback_z
+            best_circ = fb_circ
+
     return best_circ * 100, best_z, best_z / height * 100
+
+
+def _two_leg_avg_circumference(slicer, z):
+    """Average girth of the two leg cross-sections at height z.
+
+    Returns 0 unless there are exactly two contours on opposite sides
+    (one per leg) of similar size — same validity gate used by the
+    knee/calf horizontal sweeps.
+    """
+    contours = slicer.limb_contours_at_z(z)
+    if len(contours) < 2:
+        return 0.0
+    c1, xc1, _ = contours[0]
+    c2, xc2, _ = contours[1]
+    if xc1 * xc2 >= 0:  # same side
+        return 0.0
+    if min(c1, c2) < 0.5 * max(c1, c2):  # too different
+        return 0.0
+    return (c1 + c2) / 2
+
+
+def _calf_search_range(joints, height):
+    """Sweep bounds + anatomical fallback for measure_calf.
+
+    Returns (z_min, z_max, fallback_z) in metres. The fallback is None
+    when joints are unavailable; in that case the legacy fixed 16–26 %
+    range is used and no peak detection happens.
+
+    Joint-anchored bounds: 6 cm above ankle (clears malleolus), 4 cm
+    below knee (clears kneecap). Anatomical fallback: 30 % of lower-leg
+    span below the knee — the typical gastrocnemius-peak location.
+    """
+    if joints is not None:
+        l_knee = joints.get("l_knee")
+        r_knee = joints.get("r_knee")
+        l_ankle = joints.get("l_ankle")
+        r_ankle = joints.get("r_ankle")
+        if all(p is not None for p in (l_knee, r_knee, l_ankle, r_ankle)):
+            knee_z = min(float(l_knee[2]), float(r_knee[2]))
+            ankle_z = max(float(l_ankle[2]), float(r_ankle[2]))
+            z_min = ankle_z + 0.06
+            z_max = knee_z - 0.04
+            fallback_z = knee_z - 0.30 * (knee_z - ankle_z)
+            return z_min, z_max, fallback_z
+    return height * 0.16, height * 0.26, None
 
 
 def measure_wrist(mesh, height, joints=None, step=0.002):

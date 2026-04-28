@@ -277,3 +277,61 @@ class TestMeasureAPISelection:
         m = measure(anny_body, preset="core")
         assert "hip_cm" in m
         assert "hips_cm" not in m
+
+
+class TestCalfAnatomicalPlacement:
+    """ISO 8559-1 §5.3.24: calf girth = max horizontal lower-leg girth.
+
+    The measurement Z must land on the calf belly, anatomically below the
+    knee. Real anatomy: the gastrocnemius peak sits ~6–10 cm below the
+    knee crease for adults across body types.
+
+    Regression: when a body has its calf circumference blendshape pushed
+    negative (tuned bodies where the optimizer shrinks the unmeasured calf
+    to balance an oversized thigh/hip target), the lower-leg cross-section
+    just under the patella can become wider than the deflated calf belly.
+    A pure max-girth horizontal sweep then lands on the kneecap region
+    instead of the calf — visually wrong and propagates to the 4-view.
+    """
+
+    @pytest.fixture(scope="class")
+    def shrunken_calf_body(self):
+        """Synthetic body mimicking a tuned-thigh / shrunken-calf pathology."""
+        from clad_body.load.anny import load_anny_from_params
+        params = {
+            "gender": 0.8, "age": 0.5, "muscle": 0.2, "weight": 0.5,
+            "height": 0.55, "proportions": 0.45, "cupsize": 0.5,
+            "firmness": 0.5, "african": 0.1, "asian": 0.1, "caucasian": 0.8,
+            "_local_changes": {
+                # Pathology that triggers the bug: deflate calf hard while
+                # leaving lower-leg vertical span intact, so the upper part
+                # of the lower leg becomes the widest cross-section.
+                "measure-calf-circ-incr": -0.4,
+                "l-lowerleg-scale-horiz-incr": -0.2,
+                "r-lowerleg-scale-horiz-incr": -0.2,
+                "l-lowerleg-scale-depth-incr": -0.25,
+                "r-lowerleg-scale-depth-incr": -0.25,
+                # Plausible upper-body context — not strictly needed but
+                # keeps the body anatomically self-consistent.
+                "measure-thigh-circ-incr": 0.4,
+                "l-upperleg-fat-incr": 0.3,
+                "r-upperleg-fat-incr": 0.3,
+            },
+        }
+        return load_anny_from_params(params)
+
+    def test_calf_below_knee(self, shrunken_calf_body):
+        """Calf belly must be at least 4 cm below the knee crease.
+
+        4 cm is conservative: real anatomy is 6–10 cm. We pick 4 cm so a
+        slightly-misshapen mesh can still pass, but anything landing on
+        the kneecap region (gap < 4 cm) is unambiguously wrong.
+        """
+        from clad_body.measure import measure
+        m = measure(shrunken_calf_body, only=["calf_cm", "knee_cm"])
+        gap_cm = (m["_knee_z"] - m["_calf_z"]) * 100
+        assert gap_cm > 4.0, (
+            f"calf_z lands {gap_cm:.1f} cm below knee — should be >4 cm "
+            f"(calf_z={m['_calf_z']:.3f}, knee_z={m['_knee_z']:.3f}, "
+            f"calf_cm={m['calf_cm']:.2f}, knee_cm={m['knee_cm']:.2f})"
+        )

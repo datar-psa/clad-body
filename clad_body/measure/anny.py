@@ -97,6 +97,15 @@ ANNY_JOINT_MAP = {
     # within ~1–2cm across body types and is differentiable through LBS.
     "l_hip":     [("upperleg01.L", "tail")],
     "r_hip":     [("upperleg01.R", "tail")],
+    # Knee = upperleg02 TAIL = lowerleg01 HEAD (same point in space, the knee
+    # joint articulation). Used by measure_calf to bound the lower-leg sweep
+    # below the patella, so a deflated calf doesn't let the kneecap region
+    # (wider than the calf belly on tuned bodies) win the max-girth search.
+    "l_knee":    [("upperleg02.L", "tail")],
+    "r_knee":    [("upperleg02.R", "tail")],
+    # Ankle = lowerleg02 TAIL = foot HEAD = ankle joint articulation.
+    "l_ankle":   [("lowerleg02.L", "tail")],
+    "r_ankle":   [("lowerleg02.R", "tail")],
 }
 
 # Arm/hand bone indices (shoulder01 through all fingers, both sides).
@@ -1102,7 +1111,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["_knee_z"] = knee_z
         measurements["_knee_pct"] = knee_pct
 
-        calf_cm, calf_z, calf_pct = measure_calf(mesh_tri, height)
+        calf_cm, calf_z, calf_pct = measure_calf(mesh_tri, height, joints=joints)
         measurements["calf_cm"] = calf_cm
         measurements["_calf_z"] = calf_z
         measurements["_calf_pct"] = calf_pct
