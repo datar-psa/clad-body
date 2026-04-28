@@ -64,6 +64,14 @@ TOLERANCE_HIP_CM = 1.5
 # the two thighs.  Calibrated on 100 bodies: MAE 0.06 cm, max 0.18 cm.
 TOLERANCE_THIGH_CM = 0.5
 
+# knee_cm uses perpendicular-plane soft circumference at the kneecap centre
+# (= upperleg02.tail bone position), normal aligned with the femur–tibia
+# bisector.  Mirrors what the numpy reference :func:`measure_knee` slices in
+# joint-anchored mode.  Calibrated on 100 random bodies from data_10k_42:
+# MAE 0.24 cm, P95 0.51 cm, max 0.69 cm.  Tolerance pinned at 0.7 cm — at
+# the calibration max — so any further drift trips the regression.
+TOLERANCE_KNEE_CM = 0.7
+
 # upperarm_cm vertex loop is reasonable as a proxy but not ISO-accurate; allow < 1.5 cm.
 TOLERANCE_UPPERARM_CM = 1.5
 
@@ -119,6 +127,7 @@ _KEY_TOLERANCE = {
     "hip_cm": TOLERANCE_HIP_CM,
     "stomach_cm": TOLERANCE_STOMACH_CM,
     "thigh_cm": TOLERANCE_THIGH_CM,
+    "knee_cm": TOLERANCE_KNEE_CM,
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
     "inseam_cm": TOLERANCE_INSEAM_CM,
     "sleeve_length_cm": TOLERANCE_SLEEVE_CM,
@@ -263,6 +272,51 @@ def test_shoulder_width_smooth_under_irrelevant_blendshape():
     )
 
 
+# ---------------------------------------------------------------------------
+# 1d. knee_cm regression — bone-anchored Z must track under leg-length
+#                          blendshapes (the entire reason knee is bone-
+#                          anchored instead of a fixed height fraction)
+# ---------------------------------------------------------------------------
+#
+# The previous fixed-fraction implementation (24-31 % height sweep, target
+# 27.5 %) drifted off the kneecap when ``measure-{upper,lower}leg-height-incr``
+# stretched the leg, because the search range stayed pinned to body height
+# while the actual joint moved.  The bone-anchored joint Z used by both
+# methods now should follow the joint, keeping numpy and soft in agreement
+# across the full blendshape range.
+
+@pytest.mark.parametrize(
+    "delta", [-0.5, 0.0, 0.5, 1.0],
+    ids=["leg-0.5", "leg+0.0", "leg+0.5", "leg+1.0"],
+)
+def test_knee_tracks_mesh_sweep_under_leg_length_blendshape(delta):
+    """measure_grad['knee_cm'] tracks measure() across the full range of
+    the ``measure-{upper,lower}leg-height-incr`` blendshapes.
+
+    Both methods anchor at ``upperleg02.tail`` and slice perpendicular to
+    the femur-tibia bisector, so the agreement should hold uniformly as the
+    leg lengthens or shortens.  A failure here means the bone anchor or the
+    bisector axis stopped updating with LBS.
+    """
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "male_average", "anny_params.json")
+    )
+    lc = dict(params.get("_local_changes", {}))
+    lc["measure-upperleg-height-incr"] = delta
+    lc["measure-lowerleg-height-incr"] = delta
+    params["_local_changes"] = lc
+    body = load_anny_from_params(params)
+
+    ref = measure(body, only=["knee_cm"])["knee_cm"]
+    grad = measure_grad(body, only=["knee_cm"])["knee_cm"].item()
+
+    err = abs(grad - ref)
+    assert err < TOLERANCE_KNEE_CM, (
+        f"leg-length δ={delta:+.1f}: grad={grad:.3f} ref={ref:.3f} "
+        f"err={err:.3f} cm > tol={TOLERANCE_KNEE_CM} cm"
+    )
+
+
 @pytest.mark.parametrize(
     "delta", [0.0, 0.5, 1.0],
     ids=["leg+0.0", "leg+0.5", "leg+1.0"],
@@ -358,9 +412,9 @@ def test_only_none_returns_all_supported():
 def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
     body = _load("female_average")
-    # knee_cm has no measure_grad path (plane sweep looking for two separated
-    # leg contours); use it as a stable example of an unsupported key.
-    unsupported = "knee_cm"
+    # calf_cm has no measure_grad path yet (next on the list after knee);
+    # use it as a stable example of an unsupported key.
+    unsupported = "calf_cm"
     assert unsupported not in SUPPORTED_KEYS, (
         f"Pick a different key — {unsupported} is now in SUPPORTED_KEYS"
     )

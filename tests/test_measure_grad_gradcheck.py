@@ -155,6 +155,8 @@ LOOSE_PAIRS = [
     ("hip_cm",          "height"),
     ("thigh_cm",        "weight"),
     ("thigh_cm",        "height"),
+    ("knee_cm",         "weight"),
+    ("knee_cm",         "height"),
     ("upperarm_cm",     "weight"),
     ("upperarm_cm",     "muscle"),
     ("sleeve_length_cm", "height"),

@@ -486,15 +486,103 @@ def _measure_neck_horizontal(mesh, height, step=0.002):
     return best_circ * 100, best_z, best_z / height * 100
 
 
-def measure_knee(mesh, height, step=0.002):
-    """Measure knee circumference at mid-patella level (ISO 8559-1 §5.3.22).
+def measure_knee(mesh, height, joints=None, step=0.002):
+    """Measure knee circumference at the kneecap centre (ISO 8559-1 §5.3.22).
 
-    Sweeps from 24-31% height looking for Z levels where there are exactly
-    2 separate leg contours of similar size. Returns the circumference at
-    the height closest to typical mid-patella level (~28% height).
+    ISO §3.1.17 specifies the landmark as "Centre point of kneecap".
+    Empirically on Anny A-pose meshes the kneecap's anterior prominence
+    (most-negative Y in the knee region) coincides with the
+    ``upperleg02.tail`` bone position — the knee joint articulation —
+    within ~0.5 cm. Slicing at the joint position therefore lands on the
+    patella centre. The local circumference minimum is ~2 cm below the
+    kneecap (infrapatellar) and is NOT the ISO landmark.
+
+    Joint-anchored mode (``joints`` provided with l/r knee + hip + ankle):
+    slices PERPENDICULAR to the leg axis at the knee position, per leg.
+    The leg axis is taken as the femur–tibia bisector at the joint
+    (``hip → knee`` averaged with ``knee → ankle``); both halves point
+    downward so the bisector is the natural "tape direction" through the
+    hinge. Anny legs sit 5–8° off vertical (femur 5°, tibia 8°), so a
+    horizontal slice overestimates by ~1% (~+0.3 cm); perpendicular
+    slicing avoids that bias and is consistent with how
+    :func:`measure_neck` and :func:`measure_upperarm` handle off-vertical
+    limbs. Left and right circumferences are averaged.
+
+    Without joints (legacy / MHR), falls back to a fixed-height-fraction
+    horizontal sweep (24–31 % height, target 27.5 %). The fallback is
+    biased high by ~+0.3 cm vs the perpendicular result and slips off the
+    kneecap landmark under leg-length blendshapes.
+
+    Args:
+        mesh: full body trimesh (Z-up, metres, floor-aligned)
+        height: total body height in metres
+        joints: dict with ``l_hip``, ``l_knee``, ``l_ankle`` and the right-
+            side counterparts (each a (3,) array).  ``l_hip`` is the
+            perineum (= ``upperleg02.head``), not the femoral ball joint.
+        step: sweep step size in metres (legacy path only)
 
     Returns:
         (circ_cm, z, pct) or (0, 0, 0) if not found.
+    """
+    if joints is not None and all(
+        joints.get(k) is not None
+        for k in ("l_knee", "r_knee", "l_hip", "r_hip", "l_ankle", "r_ankle")
+    ):
+        return _measure_knee_perpendicular(mesh, height, joints)
+    return _measure_knee_horizontal(mesh, height, step)
+
+
+def _measure_knee_perpendicular(mesh, height, joints):
+    """Knee circumference perpendicular to the femur–tibia bisector at the
+    knee joint, averaged across left and right legs.
+
+    See :func:`measure_knee` for full rationale.
+    """
+    circs = []
+    zs = []
+    for side in ("l", "r"):
+        knee = np.asarray(joints[f"{side}_knee"])
+        hip = np.asarray(joints[f"{side}_hip"])
+        ankle = np.asarray(joints[f"{side}_ankle"])
+        femur = knee - hip                     # perineum → knee (down)
+        tibia = ankle - knee                   # knee → ankle (down)
+        f_n = np.linalg.norm(femur)
+        t_n = np.linalg.norm(tibia)
+        if f_n < 1e-6 or t_n < 1e-6:
+            continue
+        axis = femur / f_n + tibia / t_n       # bisector (downward)
+        axis_n = np.linalg.norm(axis)
+        if axis_n < 1e-6:
+            continue
+        axis /= axis_n
+
+        pts = _perpendicular_limb_contour(mesh, knee, axis, max_dist=0.10)
+        if pts is None or len(pts) < 3:
+            continue
+        # _perpendicular_limb_contour already applies a convex hull, so the
+        # perimeter is just the sum of consecutive edge lengths (matches
+        # measure_upperarm / measure_wrist).
+        closed = np.vstack([pts, pts[:1]])
+        circ = np.linalg.norm(np.diff(closed, axis=0), axis=1).sum()
+        if circ < 0.20:                        # reject tiny fragments
+            continue
+        circs.append(circ)
+        zs.append(float(knee[2]))
+
+    if not circs:
+        # All-fail safety net — fall back to horizontal so callers still
+        # get a sensible value rather than 0.
+        return _measure_knee_horizontal(mesh, height, 0.002)
+
+    avg_circ = float(np.mean(circs))
+    avg_z = float(np.mean(zs))
+    return avg_circ * 100, avg_z, avg_z / height * 100 if height > 0 else 0
+
+
+def _measure_knee_horizontal(mesh, height, step=0.002):
+    """Legacy fixed-height-fraction horizontal sweep — used when joints are
+    not available (e.g. MHR call site).  Picks the slice closest to 27.5 %
+    body height in the 24–31 % range.
     """
     slicer = MeshSlicer(mesh)
     target_pct = 0.275

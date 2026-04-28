@@ -86,6 +86,21 @@ NECK_BELOW_ADAMS_APPLE_COEF = 0.0102  # fraction of body height
 THIGH_Z_FRAC = 0.43              # fraction of mesh height
 THIGH_A, THIGH_B = 0.999, -0.24
 
+# Knee — perpendicular-plane soft circumference at the kneecap centre.
+# The plane origin is the per-leg ``upperleg02.tail`` bone position (= knee
+# joint articulation = ISO 8559-1 §3.1.17 "centre of the kneecap" on Anny
+# A-pose meshes; verified empirically via anterior-protrusion peak).  The
+# plane normal is the femur–tibia bisector at that joint, so the slice
+# follows the actual leg axis (5–8° off vertical on Anny) instead of being
+# horizontal — same convention as the numpy reference
+# :func:`~clad_body.measure._circumferences.measure_knee` in joint-anchored
+# mode.
+#
+# Calibration on 100 random bodies from data_10k_42/test.json:
+#     A = 0.9716, B = +0.4648
+#     MAE 0.24 cm, P95 0.51 cm, max 0.69 cm
+KNEE_A, KNEE_B = 0.9716, 0.4648
+
 # Stomach — see measure_stomach_soft for algorithm
 STOMACH_Z_GATE_TAU = 0.005       # metres — soft Z-band gate edge width
 STOMACH_ANTERIOR_TAU = 0.001     # metres — soft-argmin over vertex Y values
@@ -706,6 +721,95 @@ def measure_thigh_soft(model, verts):
 
     raw_thigh_cm = (circ_L + circ_R) / 2 * 100
     return {"thigh_cm": THIGH_A * raw_thigh_cm + THIGH_B}
+
+
+def _knee_axis_and_origin(model, side):
+    """Per-leg knee plane: origin at ``upperleg02.tail`` (= patella centre on
+    Anny A-pose meshes per ISO §3.1.17), normal along the femur–tibia
+    bisector.
+
+    Both ``femur = upperleg02.tail − upperleg02.head`` and
+    ``tibia = lowerleg02.tail − lowerleg01.head`` point downward (head→tail),
+    so the bisector is the natural "tape direction" through the knee hinge.
+    Anny legs sit 5–8° off vertical; using the bisector instead of a
+    horizontal plane removes the ~1 % overestimate that horizontal slicing
+    introduces, mirroring how :func:`measure_neck_soft` and
+    :func:`measure_upperarm` handle off-vertical limbs.
+
+    Returns ``(origin, axis)`` torch tensors in the model's native frame
+    (matches ``model._last_bone_heads`` / ``output["vertices"]``), or
+    ``(None, None)`` if bone ends are missing.
+    """
+    heads = getattr(model, "_last_bone_heads", None)
+    tails = getattr(model, "_last_bone_tails", None)
+    if heads is None or tails is None:
+        return None, None
+
+    labels = list(model.bone_labels)
+    try:
+        ul2 = labels.index(f"upperleg02.{side}")
+        ll1 = labels.index(f"lowerleg01.{side}")
+        ll2 = labels.index(f"lowerleg02.{side}")
+    except ValueError:
+        return None, None
+
+    knee = tails[0, ul2]                      # = heads[0, ll1] (same point)
+    femur = tails[0, ul2] - heads[0, ul2]     # perineum → knee
+    tibia = tails[0, ll2] - heads[0, ll1]     # knee → ankle
+
+    f_n = torch.linalg.norm(femur) + 1e-10
+    t_n = torch.linalg.norm(tibia) + 1e-10
+    axis = femur / f_n + tibia / t_n          # bisector (downward)
+    axis = axis / (torch.linalg.norm(axis) + 1e-10)
+    return knee, axis
+
+
+def measure_knee_soft(model, verts):
+    """Compute differentiable knee circumference at the kneecap centre.
+
+    Per-leg perpendicular slice through the knee joint, normal aligned with
+    the femur–tibia bisector at that side (see :func:`_knee_axis_and_origin`).
+    Origin sits at ``upperleg02.tail`` which on Anny A-pose meshes coincides
+    with the patella's anterior prominence — the ISO §3.1.17 "Centre point
+    of kneecap" landmark — within ~0.5 cm.  Mirrors what the numpy reference
+    :func:`~clad_body.measure._circumferences.measure_knee` does in
+    joint-anchored mode, just with sigmoid-gated edge crossings instead of
+    ``trimesh.section`` so gradients flow through bone position (LBS) and
+    vertex position (blendshapes + LBS).
+
+    Left and right circumferences are averaged.  Same soft-circumference
+    machinery (sigmoid gate + angular binning + r-biased softmax + convex
+    hull perimeter), just applied via :func:`soft_circumference_plane`
+    instead of the horizontal :func:`soft_circumference`.
+
+    Args:
+        model: Anny model (with ``_last_bone_heads`` / ``_last_bone_tails`` set).
+        verts: (1, V, 3) raw Anny vertices in the model's native frame.
+
+    Returns:
+        dict with ``knee_cm`` as 0-dim torch tensor.
+
+    Raises:
+        RuntimeError: if ``model._last_bone_heads`` is missing — knee Z needs
+            bone positions, so a forward pass with ``return_bone_ends=True``
+            must run first (``measure_grad`` does this automatically).
+    """
+    edges_L = _build_leg_edges(model, "L").to(verts.device)
+    edges_R = _build_leg_edges(model, "R").to(verts.device)
+
+    origin_L, axis_L = _knee_axis_and_origin(model, "L")
+    origin_R, axis_R = _knee_axis_and_origin(model, "R")
+    if origin_L is None or origin_R is None:
+        raise RuntimeError(
+            "measure_knee_soft requires model._last_bone_heads / _tails — "
+            "run a forward pass with return_bone_ends=True first."
+        )
+
+    circ_L = soft_circumference_plane(verts, edges_L, origin_L, axis_L)
+    circ_R = soft_circumference_plane(verts, edges_R, origin_R, axis_R)
+
+    raw_knee_cm = (circ_L + circ_R) / 2 * 100
+    return {"knee_cm": KNEE_A * raw_knee_cm + KNEE_B}
 
 
 def waist_z(model, verts_zup):

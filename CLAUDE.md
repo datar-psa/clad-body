@@ -39,7 +39,8 @@ The legacy entry points `generate_anny_mesh_from_params()`, `measure_body_from_v
 
 Algorithm details, anchor choices, calibration data, and edge-case handling for individual measurement groups live in [MEASUREMENT_INTERNALS.md](MEASUREMENT_INTERNALS.md) — read it on demand when touching the corresponding code:
 
-- **Soft circumferences** (differentiable bust / underbust / hip / thigh / neck) — see also [`../findings/soft_circumference.md`](../findings/soft_circumference.md), [`../findings/soft_neck.md`](../findings/soft_neck.md). Implementation: [`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py).
+- **Soft circumferences** (differentiable bust / underbust / hip / thigh / knee / neck) — see also [`../findings/soft_circumference.md`](../findings/soft_circumference.md), [`../findings/soft_neck.md`](../findings/soft_neck.md). Implementation: [`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py).
+- **Group B — knee** (ISO §5.3.22 + §3.1.17, bone-anchored at `upperleg02.tail` = kneecap centre, perpendicular slice along femur–tibia bisector). Same plane definition for the numpy reference and the differentiable soft path. Implementation: `measure_knee` / `_measure_knee_perpendicular` in [`clad_body/measure/_circumferences.py`](clad_body/measure/_circumferences.py).
 - **Group B — calf** (ISO §5.3.24, joint-anchored sweep + deflated-calf fallback). Implementation: [`clad_body/measure/_circumferences.py`](clad_body/measure/_circumferences.py).
 - **Group C — sleeve length** (ISO §5.4.14/§5.4.15, fast LBS bone-chain + slow ISO plane-slice reference). Implementation: [`clad_body/measure/_lengths.py`](clad_body/measure/_lengths.py).
 - **Group E — inseam, crotch trace** (perineum vertex pair, asymmetric front/back tape-bridge model). Implementation: [`clad_body/measure/_lengths.py`](clad_body/measure/_lengths.py).

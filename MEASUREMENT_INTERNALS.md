@@ -4,6 +4,41 @@ Non-obvious implementation notes for specific measurement groups. Loaded on dema
 
 For the soft (differentiable) bust / underbust / hip / thigh / neck implementation see [`../findings/soft_circumference.md`](../findings/soft_circumference.md) and [`../findings/soft_neck.md`](../findings/soft_neck.md), with the implementation in [`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py).
 
+## Group B — knee perpendicular slice (ISO 8559-1 §5.3.22 + §3.1.17)
+
+**Anny** (joint-anchored, perpendicular). The kneecap-centre landmark
+(ISO §3.1.17) is `upperleg02.tail` (= `lowerleg01.head` = the knee joint
+articulation). On Anny A-pose meshes the patella's anterior prominence
+sits at exactly this Z (verified empirically: at the joint Z the leg has
+its most-negative Y in the knee region; +/- a few cm the front recedes).
+The local circumference minimum is ~2 cm BELOW the kneecap (infrapatellar)
+and is **not** the ISO landmark — `measure_knee` used to land near it via
+a fixed-fraction sweep at 24-31 % of body height with target 27.5 %, which
+also drifted off-landmark under `measure-{upper,lower}leg-height-incr`
+blendshapes.
+
+The slice is taken **perpendicular to the femur–tibia bisector** at the
+joint, not horizontal: Anny legs sit 5–8 ° off vertical (femur 5°, tibia
+8°), so a horizontal cut overestimates by ~1 % (~+0.3 cm). The bisector is
+`(knee − hip) / |·| + (ankle − knee) / |·|`, computed from the joints
+already plumbed in (`l_hip` = `upperleg02.head` = perineum, `l_knee`,
+`l_ankle`). Per-leg perpendicular contour, convex-hull perimeter,
+average L+R. Implementation: `measure_knee` → `_measure_knee_perpendicular`
+in [`clad_body/measure/_circumferences.py`](clad_body/measure/_circumferences.py).
+
+**MHR** path keeps the legacy fixed 24-31 % horizontal sweep at 27.5 %
+(`_measure_knee_horizontal`) — `MHR_JOINT_MAP` doesn't expose hip/knee/ankle
+for this purpose, and `mhr.py:measure_knee(mesh, height)` calls without
+joints. Same drift caveats as the old Anny path apply if MHR is fed body
+proportions far from the median; not currently a problem in practice.
+
+The differentiable companion `measure_knee_soft` lives in
+[`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py) and uses
+`soft_circumference_plane` with the same per-leg origin/axis pair to keep
+the gradient path consistent with the numpy reference. Calibration
+A=0.9716, B=+0.4648 (MAE 0.24 cm, max 0.69 cm on 100 random bodies from
+data_10k_42).
+
 ## Group B — calf horizontal sweep (ISO 8559-1 §5.3.24)
 
 **Anny** (joint-anchored): bounds `[ankle_z + 6 cm, knee_z − 4 cm]` from `ANNY_JOINT_MAP`'s `l_knee`/`r_knee` (= `upperleg02.tail`) and `l_ankle`/`r_ankle` (= `lowerleg02.tail`). After picking the global max, if it lands within one step of the upper bound there is no real calf-belly peak — the lower leg is monotonically widening toward the knee, which happens on tuned bodies where the optimizer has deflated the calf as a side effect of inflating the thighs. In that case we report girth at `knee_z − 0.30 × (knee_z − ankle_z)` (gastrocnemius position) instead of the patellar clip. The reported `calf_cm` is then no longer a true ISO max but is anatomically honest about the deflated geometry. Untuned testdata bodies hit the interior-peak path (5.8–7 cm clearance from the upper bound, 9.9–11.1 cm gap from knee bone) so the fallback is never engaged for them and baselines are unchanged. Implementation: `measure_calf` + `_calf_search_range` in [`clad_body/measure/_circumferences.py`](clad_body/measure/_circumferences.py).

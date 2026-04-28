@@ -1106,7 +1106,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["_thigh_z"] = thigh_z
         measurements["_thigh_pct"] = thigh_pct
 
-        knee_cm, knee_z, knee_pct = measure_knee(mesh_tri, height)
+        knee_cm, knee_z, knee_pct = measure_knee(mesh_tri, height, joints=joints)
         measurements["knee_cm"] = knee_cm
         measurements["_knee_z"] = knee_z
         measurements["_knee_pct"] = knee_pct
@@ -1255,6 +1255,7 @@ SUPPORTED_KEYS = frozenset({
     "stomach_cm",
     "hip_cm",
     "thigh_cm",
+    "knee_cm",
     "upperarm_cm",
     "shoulder_width_cm",
     "inseam_cm",
@@ -1320,9 +1321,9 @@ def measure_grad(body, *, pose=None, only=None):
 
     Supported keys (Anny):
         ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
-        ``stomach_cm``, ``hip_cm``, ``thigh_cm``, ``upperarm_cm``,
-        ``shoulder_width_cm``, ``inseam_cm``, ``sleeve_length_cm``,
-        ``neck_cm``, ``mass_kg``.
+        ``stomach_cm``, ``hip_cm``, ``thigh_cm``, ``knee_cm``,
+        ``upperarm_cm``, ``shoulder_width_cm``, ``inseam_cm``,
+        ``sleeve_length_cm``, ``neck_cm``, ``mass_kg``.
 
     Note on shoulder_width_cm:
         Soft-argmax acromions in a Gaussian X-band anchored at the
@@ -1446,6 +1447,12 @@ def _measure_grad_from_verts(model, verts, *, requested):
         from ._soft_circ import measure_thigh_soft
         th = measure_thigh_soft(model, verts)
         result["thigh_cm"] = th["thigh_cm"]
+
+    # ── knee_cm (soft circumference, per-leg edges, bone-anchored Z) ────────
+    if "knee_cm" in requested:
+        from ._soft_circ import measure_knee_soft
+        kn = measure_knee_soft(model, verts)
+        result["knee_cm"] = kn["knee_cm"]
 
     # ── upperarm_cm (also required as input for sleeve_length) ───────────────
     upperarm_loop_cm = None
