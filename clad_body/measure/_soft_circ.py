@@ -121,6 +121,24 @@ KNEE_A, KNEE_B = 0.9716, 0.4648
 # tibia tilt makes a world-frame horizontal slice diverge from what a
 # tape would measure on a body standing straight.
 #
+# Anatomical fallback prior — soft analog of numpy ``measure_calf``'s
+# discrete boundary fallback.  When the per-bin spread profile has a clear
+# peak (normal bodies), the spread term in ``score_z`` dominates and the
+# softmax latches onto the gastrocnemius position.  When the profile is
+# monotonic (deflated calves — very low weight + low muscle), the
+# anatomical prior pulls the soft-argmax toward
+# ``fallback_z = knee_z − 0.30 × (knee_z − ankle_z)`` — the same
+# 30 %-from-knee position numpy uses as its boundary fallback.  On normal
+# bodies the gastrocnemius peak already sits at ~28-32 % from knee, so the
+# prior is centred where the spread peak already lies and adds essentially
+# nothing.  On deflated bodies it provides a stable anatomical default.
+#
+# Note: ISO 8559-1 §5.3.24 defines calf girth as "maximum horizontal
+# circumference" but is silent on what to do when no real peak exists.
+# The 30 % rule is anatomically defensible (gastrocnemius peaks land in
+# this range on normal bodies) but not a recognised standard — same
+# engineering choice numpy already makes via its boundary fallback.
+#
 # Hyperparameters:
 #   CALF_N_ZBINS    — number of candidate Zs in the search range
 #   CALF_Z_BIN_SIGMA_FRAC — Gaussian Z-binning bandwidth as a fraction of
@@ -128,18 +146,28 @@ KNEE_A, KNEE_B = 0.9716, 0.4648
 #   CALF_SOFTMAX_TAU — temperature on the per-bin spread for Z soft-argmax
 #   CALF_Z_BUFFER   — hard-mask buffer on each side of [ankle+6cm,
 #                     knee-4cm] (same role as STOMACH_Z_BUFFER)
+#   CALF_PRIOR_BETA — strength of the anatomical Gaussian prior;
+#                     larger = stronger pull toward the 30 %-from-knee
+#                     fallback Z when spread is flat (deflated calves).
+#                     Set to 0 to disable the prior entirely.
+#   CALF_FALLBACK_FRAC — fraction of lower-leg span below the knee where
+#                         the prior is centred (matches the numpy
+#                         boundary fallback's 30 %).
 #
-# Calibration on 100 random bodies from data_10k_42/test.json:
-#     A = 1.0246, B = -1.0424
-#     MAE 0.10 cm, P95 0.23 cm, max 1.72 cm
-# Uncalibrated identity (A=1, B=0) is already tight: MAE 0.16 cm, bias
-# +0.14 cm — the linear trim mainly compensates for slope-related drift
-# on extreme body types, not a systematic offset.
+# Calibration on 100 random bodies from data_10k_42/test.json with the
+# anatomical prior engaged (β=2000):
+#     A = 1.0077, B = -0.4578
+#     MAE 0.08 cm, P95 0.23 cm, max 0.92 cm
+# Without the prior the max residual was 1.72 cm on a deflated calf
+# (body #93 in the seed=42 sample) — the prior almost halves the
+# worst-case error while marginally improving testdata MAE.
 CALF_N_ZBINS = 64
 CALF_Z_BIN_SIGMA_FRAC = 1.5      # 1.5 bin widths Gaussian smoothing
 CALF_SOFTMAX_TAU = 0.0005        # metres² — temperature on per-bin spread
 CALF_Z_BUFFER = 0.005            # metres — hard band guard on each side
-CALF_A, CALF_B = 1.0246, -1.0424
+CALF_PRIOR_BETA = 2000.0         # anatomical Gaussian prior strength
+CALF_FALLBACK_FRAC = 0.30        # 30 % from knee, mirrors numpy fallback
+CALF_A, CALF_B = 1.0077, -0.4578
 
 # Stomach — see measure_stomach_soft for algorithm
 STOMACH_Z_GATE_TAU = 0.005       # metres — soft Z-band gate edge width
@@ -1046,7 +1074,21 @@ def measure_calf_soft(model, verts):
         # Soft-argmax over Z bins.  Spread is in m² (~1e-3 for a calf),
         # CALF_SOFTMAX_TAU sets how peaked the softmax is — small τ
         # picks the single bin with biggest spread, large τ averages.
+        #
+        # Anatomical prior: subtract a Gaussian penalty centred at
+        # ``fallback_z = knee_z − CALF_FALLBACK_FRAC × (knee_z − ankle_z)``
+        # to gravitate toward the 30 %-from-knee position.  When the
+        # spread has a real peak the spread term dominates (penalty is a
+        # small bias).  When the profile is flat (deflated calves) the
+        # prior decides the Z, mirroring the numpy boundary fallback
+        # smoothly.  See module-level note for the calibration trade-off.
         score_z = spread_bin / CALF_SOFTMAX_TAU
+        if CALF_PRIOR_BETA > 0:
+            fallback_z_local = (
+                knee_z_t - CALF_FALLBACK_FRAC * (knee_z_t - ankle_z_t)
+            )
+            prior_penalty = CALF_PRIOR_BETA * (z_grid - fallback_z_local) ** 2
+            score_z = score_z - prior_penalty
         weights_z = torch.softmax(score_z, dim=0)
         calf_z = (weights_z * z_grid).sum()
 

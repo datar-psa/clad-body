@@ -74,10 +74,13 @@ TOLERANCE_KNEE_CM = 0.7
 
 # calf_cm uses per-Z spread aggregate (Gaussian Z-binning of leg vertices,
 # spread = squared distance from per-leg axis centroid) → soft-argmax over
-# Z bins → soft_circumference_plane perpendicular to tibia at the resolved
-# Z.  Mirrors numpy ``measure_calf``'s phase-1 max-girth Z search +
-# phase-2 perpendicular slice.  Calibrated on 100 random bodies from
-# data_10k_42 (set in the calf calibration tag below).
+# Z bins, with an anatomical prior pulling toward the 30 %-from-knee
+# fallback when the spread is monotonic (deflated calves) →
+# soft_circumference_plane perpendicular to tibia at the resolved Z.
+# Mirrors numpy ``measure_calf``'s phase-1 max-girth + boundary fallback
+# + phase-2 perpendicular slice.  Calibrated on 100 random bodies from
+# data_10k_42 (β=2000): MAE 0.08 cm, P95 0.23 cm, max 0.92 cm.  Pinned
+# at 1.0 cm — ~10 % headroom over the calibration max.
 TOLERANCE_CALF_CM = 1.0
 
 # upperarm_cm vertex loop is reasonable as a proxy but not ISO-accurate; allow < 1.5 cm.
