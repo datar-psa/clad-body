@@ -72,6 +72,14 @@ TOLERANCE_THIGH_CM = 0.5
 # the calibration max — so any further drift trips the regression.
 TOLERANCE_KNEE_CM = 0.7
 
+# calf_cm uses per-Z spread aggregate (Gaussian Z-binning of leg vertices,
+# spread = squared distance from per-leg axis centroid) → soft-argmax over
+# Z bins → soft_circumference_plane perpendicular to tibia at the resolved
+# Z.  Mirrors numpy ``measure_calf``'s phase-1 max-girth Z search +
+# phase-2 perpendicular slice.  Calibrated on 100 random bodies from
+# data_10k_42 (set in the calf calibration tag below).
+TOLERANCE_CALF_CM = 1.0
+
 # upperarm_cm vertex loop is reasonable as a proxy but not ISO-accurate; allow < 1.5 cm.
 TOLERANCE_UPPERARM_CM = 1.5
 
@@ -128,6 +136,7 @@ _KEY_TOLERANCE = {
     "stomach_cm": TOLERANCE_STOMACH_CM,
     "thigh_cm": TOLERANCE_THIGH_CM,
     "knee_cm": TOLERANCE_KNEE_CM,
+    "calf_cm": TOLERANCE_CALF_CM,
     "upperarm_cm": TOLERANCE_UPPERARM_CM,
     "inseam_cm": TOLERANCE_INSEAM_CM,
     "sleeve_length_cm": TOLERANCE_SLEEVE_CM,
@@ -285,6 +294,77 @@ def test_shoulder_width_smooth_under_irrelevant_blendshape():
 # methods now should follow the joint, keeping numpy and soft in agreement
 # across the full blendshape range.
 
+# ---------------------------------------------------------------------------
+# 1e. calf_cm regression — joint-anchored search range and tibia-perpendicular
+#                          slice must follow the joints under leg-length and
+#                          calf-shape blendshapes
+# ---------------------------------------------------------------------------
+#
+# Calf has two failure modes the joint-anchored design is meant to prevent:
+#   (1) The legacy fixed 16–26 % height range can drift off the calf belly
+#       when ``measure-{upper,lower}leg-height-incr`` stretches the leg.
+#   (2) The per-Z spread proxy must keep tracking a moving gastrocnemius
+#       under ``measure-calf-circ-incr``.
+# The two parametrizations below pin both.
+
+@pytest.mark.parametrize(
+    "delta", [-0.5, 0.0, 0.5, 1.0],
+    ids=["leg-0.5", "leg+0.0", "leg+0.5", "leg+1.0"],
+)
+def test_calf_tracks_mesh_sweep_under_leg_length_blendshape(delta):
+    """measure_grad['calf_cm'] tracks measure() across the full range of
+    ``measure-{upper,lower}leg-height-incr`` blendshapes.
+
+    Both methods anchor the search range on bone Z (knee + ankle) and slice
+    perpendicular to the tibia; the agreement should hold uniformly as the
+    leg lengthens or shortens.
+    """
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "male_average", "anny_params.json")
+    )
+    lc = dict(params.get("_local_changes", {}))
+    lc["measure-upperleg-height-incr"] = delta
+    lc["measure-lowerleg-height-incr"] = delta
+    params["_local_changes"] = lc
+    body = load_anny_from_params(params)
+
+    ref = measure(body, only=["calf_cm"])["calf_cm"]
+    grad = measure_grad(body, only=["calf_cm"])["calf_cm"].item()
+
+    err = abs(grad - ref)
+    assert err < TOLERANCE_CALF_CM, (
+        f"leg-length δ={delta:+.1f}: grad={grad:.3f} ref={ref:.3f} "
+        f"err={err:.3f} cm > tol={TOLERANCE_CALF_CM} cm"
+    )
+
+
+@pytest.mark.parametrize(
+    "delta", [-0.7, 0.0, 0.7, 1.0],
+    ids=["calf-0.7", "calf+0.0", "calf+0.7", "calf+1.0"],
+)
+def test_calf_tracks_mesh_sweep_under_calf_blendshape(delta):
+    """measure_grad['calf_cm'] tracks measure() under the
+    ``measure-calf-circ-incr`` blendshape (the direct calf-girth lever
+    that tuning would push).
+    """
+    params = load_phenotype_params(
+        os.path.join(TESTDATA_DIR, "male_average", "anny_params.json")
+    )
+    lc = dict(params.get("_local_changes", {}))
+    lc["measure-calf-circ-incr"] = delta
+    params["_local_changes"] = lc
+    body = load_anny_from_params(params)
+
+    ref = measure(body, only=["calf_cm"])["calf_cm"]
+    grad = measure_grad(body, only=["calf_cm"])["calf_cm"].item()
+
+    err = abs(grad - ref)
+    assert err < TOLERANCE_CALF_CM, (
+        f"calf-circ δ={delta:+.1f}: grad={grad:.3f} ref={ref:.3f} "
+        f"err={err:.3f} cm > tol={TOLERANCE_CALF_CM} cm"
+    )
+
+
 @pytest.mark.parametrize(
     "delta", [-0.5, 0.0, 0.5, 1.0],
     ids=["leg-0.5", "leg+0.0", "leg+0.5", "leg+1.0"],
@@ -412,9 +492,9 @@ def test_only_none_returns_all_supported():
 def test_only_unsupported_key_raises():
     """Requesting an unsupported key raises ValueError listing SUPPORTED_KEYS."""
     body = _load("female_average")
-    # calf_cm has no measure_grad path yet (next on the list after knee);
-    # use it as a stable example of an unsupported key.
-    unsupported = "calf_cm"
+    # wrist_cm has no measure_grad path yet — use it as a stable example
+    # of an unsupported key.
+    unsupported = "wrist_cm"
     assert unsupported not in SUPPORTED_KEYS, (
         f"Pick a different key — {unsupported} is now in SUPPORTED_KEYS"
     )

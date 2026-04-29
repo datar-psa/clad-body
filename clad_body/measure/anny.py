@@ -1256,6 +1256,7 @@ SUPPORTED_KEYS = frozenset({
     "hip_cm",
     "thigh_cm",
     "knee_cm",
+    "calf_cm",
     "upperarm_cm",
     "shoulder_width_cm",
     "inseam_cm",
@@ -1322,8 +1323,8 @@ def measure_grad(body, *, pose=None, only=None):
     Supported keys (Anny):
         ``height_cm``, ``bust_cm``, ``underbust_cm``, ``waist_cm``,
         ``stomach_cm``, ``hip_cm``, ``thigh_cm``, ``knee_cm``,
-        ``upperarm_cm``, ``shoulder_width_cm``, ``inseam_cm``,
-        ``sleeve_length_cm``, ``neck_cm``, ``mass_kg``.
+        ``calf_cm``, ``upperarm_cm``, ``shoulder_width_cm``,
+        ``inseam_cm``, ``sleeve_length_cm``, ``neck_cm``, ``mass_kg``.
 
     Note on shoulder_width_cm:
         Soft-argmax acromions in a Gaussian X-band anchored at the
@@ -1453,6 +1454,12 @@ def _measure_grad_from_verts(model, verts, *, requested):
         from ._soft_circ import measure_knee_soft
         kn = measure_knee_soft(model, verts)
         result["knee_cm"] = kn["knee_cm"]
+
+    # ── calf_cm (soft-argmax over Z + perpendicular plane at that Z) ────────
+    if "calf_cm" in requested:
+        from ._soft_circ import measure_calf_soft
+        cf = measure_calf_soft(model, verts)
+        result["calf_cm"] = cf["calf_cm"]
 
     # ── upperarm_cm (also required as input for sleeve_length) ───────────────
     upperarm_loop_cm = None

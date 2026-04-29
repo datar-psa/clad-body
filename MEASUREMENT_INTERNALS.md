@@ -39,11 +39,21 @@ the gradient path consistent with the numpy reference. Calibration
 A=0.9716, B=+0.4648 (MAE 0.24 cm, max 0.69 cm on 100 random bodies from
 data_10k_42).
 
-## Group B — calf horizontal sweep (ISO 8559-1 §5.3.24)
+## Group B — calf two-phase joint-anchored search (ISO 8559-1 §5.3.24)
 
-**Anny** (joint-anchored): bounds `[ankle_z + 6 cm, knee_z − 4 cm]` from `ANNY_JOINT_MAP`'s `l_knee`/`r_knee` (= `upperleg02.tail`) and `l_ankle`/`r_ankle` (= `lowerleg02.tail`). After picking the global max, if it lands within one step of the upper bound there is no real calf-belly peak — the lower leg is monotonically widening toward the knee, which happens on tuned bodies where the optimizer has deflated the calf as a side effect of inflating the thighs. In that case we report girth at `knee_z − 0.30 × (knee_z − ankle_z)` (gastrocnemius position) instead of the patellar clip. The reported `calf_cm` is then no longer a true ISO max but is anatomically honest about the deflated geometry. Untuned testdata bodies hit the interior-peak path (5.8–7 cm clearance from the upper bound, 9.9–11.1 cm gap from knee bone) so the fallback is never engaged for them and baselines are unchanged. Implementation: `measure_calf` + `_calf_search_range` in [`clad_body/measure/_circumferences.py`](clad_body/measure/_circumferences.py).
+**Anny** (joint-anchored, two-phase). ISO §5.3.24 says "maximum **horizontal** circumference of the calf" — but the ISO protocol assumes a person standing erect with vertical legs, so on an Anny A-pose mesh (tibia ~8° off vertical) the principled interpretation of "horizontal" is "perpendicular to the tibia". Same logic as upperarm (45° in A-pose) and neck (15-20°): the standard's "horizontal" is shorthand for the standing-vertical case; for a posed mesh, perpendicular-to-limb is faithful.
 
-**MHR** path keeps the legacy fixed 16–26 % height sweep — `MHR_JOINT_MAP` does not yet have knee/ankle entries, and `mhr.py:measure_calf(mesh, height)` calls without joints. Same boundary-pathology risk applies if MHR is ever used with a tuned-deflated body; not currently a problem.
+Implementation:
+- **Phase 1 — horizontal sweep** over `[ankle_z + 6 cm, knee_z − 4 cm]` from `ANNY_JOINT_MAP`'s `l_knee`/`r_knee` (= `upperleg02.tail`) and `l_ankle`/`r_ankle` (= `lowerleg02.tail`) finds the gastrocnemius-peak Z via `_two_leg_avg_circumference`. Cheap, vectorised through `MeshSlicer`.
+- **Phase 2 — perpendicular slice** per leg at that Z, normal aligned with the tibia axis (`ankle − knee`), through `_perpendicular_limb_contour`. Convex-hull perimeter, average L+R.
+
+Boundary fallback (deflated-calf safety net): if the Phase-1 max lands within one step of the upper bound, the lower leg is monotonically widening toward the knee — no real calf belly. This happens on tuned bodies where the optimizer has deflated the calf as a side effect of inflating the thighs. We fall back to `knee_z − 0.30 × (knee_z − ankle_z)` (gastrocnemius position) and slice perpendicular there. Untuned testdata bodies hit the interior-peak path (5.8-7 cm clearance from the upper bound) so the fallback is never engaged.
+
+Implementation: `measure_calf` → `_calf_perpendicular_at_z` + `_calf_search_range` in [`clad_body/measure/_circumferences.py`](clad_body/measure/_circumferences.py).
+
+**MHR** path keeps the legacy fixed 16-26 % height range with horizontal slicing — `MHR_JOINT_MAP` doesn't expose knee/ankle, and `mhr.py:measure_calf(mesh, height)` calls without joints. Same boundary-pathology risk applies if MHR is ever used with a tuned-deflated body; not currently a problem.
+
+The differentiable companion `measure_calf_soft` lives in [`clad_body/measure/_soft_circ.py`](clad_body/measure/_soft_circ.py). Two-phase too: a per-leg soft-argmax over a Gaussian Z-binning of leg vertices weighted by squared distance from the per-leg axis centroid (mirrors numpy's circumference-peak search), then `soft_circumference_plane` perpendicular to the tibia at the resolved Z. An earlier per-vertex posterior-Y proxy was rejected because the Y peak and the circumference peak don't coincide on slim bodies (1.9 cm under-read on female_slim); the per-Z spread aggregate tracks circumference more faithfully (testdata MAE 0.14 cm).
 
 ## Group C — sleeve length (ISO 8559-1 §5.4.14 + §5.4.15)
 

@@ -618,34 +618,44 @@ def _measure_knee_horizontal(mesh, height, step=0.002):
 def measure_calf(mesh, height, joints=None, step=0.002):
     """Measure calf circumference — maximum lower leg girth (ISO 8559-1 §5.3.24).
 
-    Horizontal plane sweep over the lower leg using the same convex-hull
-    tape-measure simulation as the rest of the limb sweeps. Finds the
-    global max within an anatomical search range, with a sanity check
-    that the max is a real local peak rather than a boundary clip.
+    Two-phase joint-anchored design (mirrors :func:`measure_upperarm`):
 
-    Joint-anchored mode (knee + ankle joints provided): sweeps
-    ``z ∈ [ankle_z + 6 cm, knee_z − 4 cm]``, where the 6 cm ankle offset
-    clears the malleolus and the 4 cm knee offset clears the kneecap.
-    The natural calf-belly maximum sits 9–11 cm below the knee on
-    untuned bodies, comfortably interior to this range.
+    1. **Horizontal sweep** over ``z ∈ [ankle_z + 6 cm, knee_z − 4 cm]``
+       with the cheap :func:`_two_leg_avg_circumference` to find the
+       gastrocnemius-peak Z. The 6 cm ankle offset clears the malleolus
+       and the 4 cm knee offset clears the kneecap; the natural
+       calf-belly maximum sits 9–11 cm below the knee on untuned bodies,
+       comfortably interior to this range.
+    2. **Perpendicular slice** per leg at that Z, normal aligned with the
+       tibia axis (``ankle − knee``). Anny tibias sit ~8° off vertical
+       in A-pose, so the world-frame "horizontal" slice diverges from
+       what an actual tape would measure on the same body standing erect
+       (where the tibia would be vertical and "horizontal" = "perpendicular
+       to tibia"). ISO §5.3.24's ``horizontal`` shorthand assumes the
+       standing-erect protocol; on an A-pose mesh the principled
+       interpretation is perpendicular-to-limb. Same convention as
+       :func:`measure_upperarm` (perpendicular at best Z found by
+       horizontal sweep), :func:`_measure_neck_perpendicular` (15–20°
+       tilt), and :func:`_measure_knee_perpendicular` (femur–tibia
+       bisector at the joint).  Left and right circumferences are
+       averaged.
 
-    Peak vs. boundary: if the max lands within one step of the upper
-    bound (``z_max − step``), the lower leg is monotonically widening
-    toward the knee — there is no real calf belly. This happens on
-    tuned bodies where the optimizer has deflated the calf as a side
+    Peak vs. boundary: if the Phase-1 max lands within one step of the
+    upper bound (``z_max − step``), the lower leg is monotonically
+    widening toward the knee — there is no real calf belly. This happens
+    on tuned bodies where the optimizer has deflated the calf as a side
     effect of inflating the thighs/hips. Reporting the boundary value
     would put the measurement on the upper lower-leg (essentially the
-    popliteal region), which is anatomically misleading. Instead, we
-    fall back to ``knee_z − 0.30 × (knee_z − ankle_z)`` — the typical
-    gastrocnemius-peak position (~30 % down from the knee) — and report
-    the girth there. The value is no longer a true ISO max, but it's
-    where a tape would land on a normal anatomy and the visualization is
-    sensible. The reported ``calf_cm`` will be smaller than the boundary
-    clip, honestly reflecting the deflated geometry.
+    popliteal region), which is anatomically misleading. We fall back to
+    ``knee_z − 0.30 × (knee_z − ankle_z)`` — the typical
+    gastrocnemius-peak position (~30 % down from the knee) — and use
+    that as the slice Z. The reported ``calf_cm`` will be smaller than
+    the boundary clip, honestly reflecting the deflated geometry.
 
-    Without joints, falls back to a fixed 16–26 % height range with no
-    peak detection — the legacy behavior, vulnerable to the boundary
-    case but adequate for un-tuned bodies.
+    Without joints (MHR call site), falls back to a fixed 16–26 % height
+    range with horizontal slicing and no peak detection — the legacy
+    behavior, vulnerable to the boundary case but adequate for un-tuned
+    bodies.
 
     Returns:
         (circ_cm, z, pct) or (0, 0, 0) if not found.
@@ -654,29 +664,86 @@ def measure_calf(mesh, height, joints=None, step=0.002):
     if z_max <= z_min:
         return 0, 0, 0
 
+    have_joints = joints is not None and all(
+        joints.get(k) is not None
+        for k in ("l_knee", "r_knee", "l_ankle", "r_ankle")
+    )
+
+    # Phase 1: horizontal sweep finds the gastrocnemius-peak Z (cheap).
     slicer = MeshSlicer(mesh)
-    best_circ = 0
+    best_horiz_circ = 0
     best_z = 0
 
     for z in np.arange(z_min, z_max, step):
         avg_circ = _two_leg_avg_circumference(slicer, z)
-        if avg_circ > best_circ:
-            best_circ = avg_circ
+        if avg_circ > best_horiz_circ:
+            best_horiz_circ = avg_circ
             best_z = z
 
-    if best_circ == 0:
+    if best_horiz_circ == 0:
         return 0, 0, 0
 
-    # Boundary detection: max at the upper bound means no true calf-belly
-    # peak exists. Use the anatomical fallback position when available.
+    # Boundary detection — fall back to anatomical 30 %-from-knee when
+    # the calf is deflated (no real peak in [z_min, z_max]).
     at_upper_bound = best_z >= z_max - step * 1.5
     if fallback_z is not None and at_upper_bound:
-        fb_circ = _two_leg_avg_circumference(slicer, fallback_z)
-        if fb_circ > 0:
+        fb_horiz = _two_leg_avg_circumference(slicer, fallback_z)
+        if fb_horiz > 0:
             best_z = fallback_z
-            best_circ = fb_circ
+            best_horiz_circ = fb_horiz
 
-    return best_circ * 100, best_z, best_z / height * 100
+    if not have_joints:
+        # MHR / no-joints path — keep the legacy horizontal value.
+        return best_horiz_circ * 100, best_z, best_z / height * 100
+
+    # Phase 2: perpendicular slice per leg at best_z, tibia axis.
+    return _calf_perpendicular_at_z(mesh, best_z, joints, height,
+                                    horizontal_fallback=best_horiz_circ)
+
+
+def _calf_perpendicular_at_z(mesh, best_z, joints, height,
+                              horizontal_fallback):
+    """Slice perpendicular to each tibia at the same target Z, average L+R.
+
+    The slice origin is moved laterally to each leg's local centre so the
+    plane normal stays at the tibia axis but the cut sits on the right
+    leg. Falls back to the horizontal value if both perpendicular slices
+    fail (mesh fragmentation or contour rejection).
+    """
+    circs = []
+    for side in ("l", "r"):
+        knee = np.asarray(joints[f"{side}_knee"])
+        ankle = np.asarray(joints[f"{side}_ankle"])
+        tibia = ankle - knee                         # knee → ankle (down)
+        t_n = np.linalg.norm(tibia)
+        if t_n < 1e-6:
+            continue
+        axis = tibia / t_n
+
+        # Origin: project the tibia line down to ``best_z``.  Solving
+        # ``knee.z + t * tibia.z == best_z`` keeps the slice origin on
+        # the tibia centre line at the target height, so the
+        # perpendicular-contour matcher (max_dist = 10 cm) sees only
+        # this side's cross-section.
+        if abs(tibia[2]) < 1e-6:
+            continue
+        t = (best_z - knee[2]) / tibia[2]
+        origin = knee + t * tibia
+
+        pts = _perpendicular_limb_contour(mesh, origin, axis, max_dist=0.10)
+        if pts is None or len(pts) < 3:
+            continue
+        closed = np.vstack([pts, pts[:1]])
+        circ = np.linalg.norm(np.diff(closed, axis=0), axis=1).sum()
+        if circ < 0.20:                              # reject tiny fragments
+            continue
+        circs.append(circ)
+
+    if not circs:
+        return horizontal_fallback * 100, best_z, best_z / height * 100
+
+    avg_circ = float(np.mean(circs))
+    return avg_circ * 100, best_z, best_z / height * 100
 
 
 def _two_leg_avg_circumference(slicer, z):

@@ -101,6 +101,46 @@ THIGH_A, THIGH_B = 0.999, -0.24
 #     MAE 0.24 cm, P95 0.51 cm, max 0.69 cm
 KNEE_A, KNEE_B = 0.9716, 0.4648
 
+# Calf — perpendicular-plane soft circumference at the gastrocnemius peak.
+# Z is resolved by per-leg soft-argmax over a discrete Z grid, where each
+# bin's "score" is a leg-axis-relative spread proxy aggregated via Gaussian
+# Z-binning of the leg vertices.  This mirrors what numpy ``measure_calf``
+# does — it finds the Z of maximum *circumference* by sweeping
+# :func:`_two_leg_avg_circumference`; we approximate that by aggregating
+# (x − leg_cx)² + (y − leg_cy)² over a soft Z-binning of leg vertices, then
+# soft-argmax over Z bins.
+#
+# An earlier per-vertex score (``y/τ``, posterior protrusion) was rejected
+# because the y peak and the circumference peak don't always coincide on
+# slim bodies — y peaked at z≈0.32 while circumference peaked at z≈0.36 on
+# female_slim, giving a 1.9 cm under-read.  The per-Z aggregate proxy
+# tracks circumference more faithfully (within 0.3 cm on testdata).
+#
+# The slice is perpendicular to the tibia axis (``ankle − knee``) at the
+# resolved Z — same convention as the numpy reference, where Anny's ~8°
+# tibia tilt makes a world-frame horizontal slice diverge from what a
+# tape would measure on a body standing straight.
+#
+# Hyperparameters:
+#   CALF_N_ZBINS    — number of candidate Zs in the search range
+#   CALF_Z_BIN_SIGMA_FRAC — Gaussian Z-binning bandwidth as a fraction of
+#                            the bin spacing (smoothing across bins)
+#   CALF_SOFTMAX_TAU — temperature on the per-bin spread for Z soft-argmax
+#   CALF_Z_BUFFER   — hard-mask buffer on each side of [ankle+6cm,
+#                     knee-4cm] (same role as STOMACH_Z_BUFFER)
+#
+# Calibration on 100 random bodies from data_10k_42/test.json:
+#     A = 1.0246, B = -1.0424
+#     MAE 0.10 cm, P95 0.23 cm, max 1.72 cm
+# Uncalibrated identity (A=1, B=0) is already tight: MAE 0.16 cm, bias
+# +0.14 cm — the linear trim mainly compensates for slope-related drift
+# on extreme body types, not a systematic offset.
+CALF_N_ZBINS = 64
+CALF_Z_BIN_SIGMA_FRAC = 1.5      # 1.5 bin widths Gaussian smoothing
+CALF_SOFTMAX_TAU = 0.0005        # metres² — temperature on per-bin spread
+CALF_Z_BUFFER = 0.005            # metres — hard band guard on each side
+CALF_A, CALF_B = 1.0246, -1.0424
+
 # Stomach — see measure_stomach_soft for algorithm
 STOMACH_Z_GATE_TAU = 0.005       # metres — soft Z-band gate edge width
 STOMACH_ANTERIOR_TAU = 0.001     # metres — soft-argmin over vertex Y values
@@ -810,6 +850,248 @@ def measure_knee_soft(model, verts):
 
     raw_knee_cm = (circ_L + circ_R) / 2 * 100
     return {"knee_cm": KNEE_A * raw_knee_cm + KNEE_B}
+
+
+def _build_leg_vertex_mask(model, side):
+    """Single-leg vertex mask (dominantly skinned to that side's leg bones).
+
+    Cached on ``model._soft_circ_leg_vmask_<side>``.
+
+    Used by :func:`measure_calf_soft` to gate the radius-score Z resolver
+    so only that side's lower-leg vertices contribute to the soft-argmax.
+
+    Returns (V,) float tensor.
+    """
+    attr = f"_soft_circ_leg_vmask_{side}"
+    cached = getattr(model, attr, None)
+    if cached is not None:
+        return cached
+
+    leg_bones = LEFT_LEG_BONES if side == "L" else RIGHT_LEG_BONES
+    vbw = model.vertex_bone_weights.detach().cpu().numpy()
+    vbi = model.vertex_bone_indices.detach().cpu().numpy()
+    dominant_bone = vbi[np.arange(vbw.shape[0]), np.argmax(vbw, axis=1)]
+    mask = np.isin(dominant_bone, list(leg_bones)).astype(np.float32)
+    result = torch.from_numpy(mask)
+    setattr(model, attr, result)
+    return result
+
+
+def _calf_axis_origin_and_z_range(model, side, verts_zup):
+    """Per-leg tibia axis, knee point (in mesh frame), and Z search bounds.
+
+    Returns ``(knee_z_t, ankle_z_t, axis, knee_pt)`` where:
+      - ``knee_z_t`` / ``ankle_z_t`` are scalar torch tensors (metres) in the
+        ``verts_zup`` frame.
+      - ``axis`` is a (3,) torch tensor (downward, unit-norm), in the raw
+        verts frame (NOT zup) — used by ``soft_circumference_plane`` which
+        operates in the model's native frame.
+      - ``knee_pt`` is the (3,) knee point in the raw verts frame, used as
+        the seed for ``origin = knee + t*tibia`` once the soft-resolved Z
+        is known.
+
+    Uses the same height-fraction projection as :func:`knee_z` to map bone
+    Z into the ``verts_zup`` frame.
+    """
+    heads = getattr(model, "_last_bone_heads", None)
+    tails = getattr(model, "_last_bone_tails", None)
+    if heads is None or tails is None:
+        return None
+
+    labels = list(model.bone_labels)
+    try:
+        ul2 = labels.index(f"upperleg02.{side}")
+        ll2 = labels.index(f"lowerleg02.{side}")
+        ll1 = labels.index(f"lowerleg01.{side}")
+    except ValueError:
+        return None
+
+    knee_pt = tails[0, ul2]                 # raw frame
+    ankle_pt = tails[0, ll2]
+    tibia = ankle_pt - heads[0, ll1]        # knee → ankle (down)
+    t_n = torch.linalg.norm(tibia) + 1e-10
+    axis = tibia / t_n
+
+    # Project knee Z and ankle Z into the verts_zup frame using the same
+    # fractional-height map :func:`bust_z` / :func:`knee_z` use.
+    with torch.no_grad():
+        all_pts = torch.cat([heads[0], tails[0]], dim=0)
+        extents = all_pts.max(0).values - all_pts.min(0).values
+        height_axis = int(extents.argmax().item())
+    all_pts_diff = torch.cat([heads[0], tails[0]], dim=0)
+    raw_min = all_pts_diff[:, height_axis].min()
+    raw_range = all_pts_diff[:, height_axis].max() - raw_min
+    mesh_height = verts_zup[0, :, 2].max()
+
+    frac_knee = (knee_pt[height_axis] - raw_min) / (raw_range + 1e-10)
+    frac_ankle = (ankle_pt[height_axis] - raw_min) / (raw_range + 1e-10)
+    knee_z_t = frac_knee * mesh_height
+    ankle_z_t = frac_ankle * mesh_height
+
+    return knee_z_t, ankle_z_t, axis, knee_pt
+
+
+def measure_calf_soft(model, verts):
+    """Compute differentiable calf circumference (ISO 8559-1 §5.3.24).
+
+    Mirrors numpy :func:`~clad_body.measure._circumferences.measure_calf`
+    in joint-anchored perpendicular-slice mode.  Per-leg algorithm:
+
+    1. Compute the search range in the ``verts_zup`` frame from the bone
+       positions: ``z_min = ankle_z + 6 cm``, ``z_max = knee_z − 4 cm``
+       (same offsets as the numpy reference).
+    2. **Soft-argmax over Z.**  Pick a radius score for each lower-leg
+       vertex: ``r = √((x − leg_centre_x)² + y²)`` measured in the
+       verts_zup frame.  Wider lower leg = larger r.  Apply a hard Z-band
+       mask (with ``CALF_Z_BUFFER`` guard) plus a per-leg vertex mask, and
+       soft-argmax via ``softmax(r / τ)`` over the gated vertices.  The
+       resulting ``z_calf`` tracks the gastrocnemius peak smoothly under
+       phenotype changes.
+    3. **One** :func:`soft_circumference_plane` call at the resolved Z,
+       sliced perpendicular to the tibia axis.
+
+    Mirrors the :func:`measure_stomach_soft` "soft-argmax then one
+    soft_circumference" pattern, plus the per-leg + perpendicular-plane
+    machinery from :func:`measure_knee_soft`.
+
+    Left and right circumferences are averaged.
+
+    Args:
+        model: Anny model (with ``_last_bone_heads`` / ``_last_bone_tails``
+            populated by :func:`measure_grad`).
+        verts: (1, V, 3) raw Anny vertices in the model's native frame.
+
+    Returns:
+        dict with ``calf_cm`` as 0-dim torch tensor.
+
+    Raises:
+        RuntimeError: if ``model._last_bone_heads`` is missing — calf needs
+            knee/ankle bones, so a forward pass with
+            ``return_bone_ends=True`` must run first.
+    """
+    verts_zup = _to_zup(verts)
+    v_zup = verts_zup[0]                    # (V, 3)
+
+    circs = []
+    for side in ("L", "R"):
+        bones = _calf_axis_origin_and_z_range(model, side, verts_zup)
+        if bones is None:
+            raise RuntimeError(
+                "measure_calf_soft requires model._last_bone_heads / _tails — "
+                "run a forward pass with return_bone_ends=True first."
+            )
+        knee_z_t, ankle_z_t, axis, knee_pt = bones
+
+        # Search range with 6 cm / 4 cm joint offsets (matches numpy)
+        z_min = ankle_z_t + 0.06
+        z_max = knee_z_t - 0.04
+
+        # Per-leg vertex mask (lower-leg vertices for THIS side)
+        leg_vmask = _build_leg_vertex_mask(model, side).to(verts_zup.device)
+
+        # Hard Z-band mask with CALF_Z_BUFFER guard on each side
+        with torch.no_grad():
+            band = (
+                (v_zup[:, 2] > z_min - CALF_Z_BUFFER)
+                & (v_zup[:, 2] < z_max + CALF_Z_BUFFER)
+            ).float()
+        gate = leg_vmask * band             # (V,)
+
+        # Per-leg axis centre (XY centroid of gated vertices).  Tracks
+        # the leg position smoothly so spread = squared distance from
+        # the centroid is translation-invariant.  Kept differentiable
+        # through the centroid formula: when phenotype moves the leg
+        # vertices, the centroid follows, so ``calf_cm`` gradient
+        # captures the full response (a detached centroid would miss
+        # ~12 % of the FD gradient on weight/muscle perturbations).
+        w_sum = gate.sum() + 1e-10
+        leg_cx = (v_zup[:, 0] * gate).sum() / w_sum
+        leg_cy = (v_zup[:, 1] * gate).sum() / w_sum
+
+        # Per-Z spread proxy → soft-argmax over Z bins.  The numpy
+        # reference uses :func:`_two_leg_avg_circumference` to pick the
+        # Z of maximum girth; we approximate the same shape function by
+        # aggregating per-vertex squared distance from the leg axis into
+        # Gaussian Z bins, then taking softmax over the per-bin sum.
+        # This tracks the *circumference* peak rather than the
+        # individual most-posterior vertex (which can be misaligned on
+        # slim bodies where the Y peak and the girth peak diverge).
+        #
+        # The Z grid follows ``z_min`` / ``z_max`` differentiably (through
+        # the knee/ankle bone Zs) so phenotype changes that move the
+        # search range carry gradient through to ``calf_z``.  Detaching
+        # the grid would break this path and gives autograd a
+        # systematically-too-small gradient vs central FD (~12 % off).
+        t = torch.linspace(
+            0.0, 1.0, CALF_N_ZBINS,
+            device=v_zup.device, dtype=v_zup.dtype,
+        )
+        z_grid = z_min + (z_max - z_min) * t
+        sigma_z = (z_max - z_min) / (CALF_N_ZBINS - 1) * CALF_Z_BIN_SIGMA_FRAC
+        # Gaussian assignment of each vertex to each Z bin: (V, n_zbins)
+        z_diff = v_zup[:, 2:3] - z_grid.unsqueeze(0)
+        z_assign = torch.exp(-(z_diff ** 2) / (2 * sigma_z ** 2 + 1e-12))
+        z_assign = z_assign * gate.unsqueeze(1)             # (V, n_zbins)
+
+        # Per-vertex spread proxy: squared distance from the leg axis.
+        # Differentiable through verts.
+        spread_v = (v_zup[:, 0] - leg_cx) ** 2 + (v_zup[:, 1] - leg_cy) ** 2
+
+        # Per-bin spread = vertex-weighted mean of spread_v over the bin.
+        spread_bin = (
+            (spread_v.unsqueeze(1) * z_assign).sum(0)
+            / (z_assign.sum(0) + 1e-10)
+        )                                                   # (n_zbins,)
+
+        # Soft-argmax over Z bins.  Spread is in m² (~1e-3 for a calf),
+        # CALF_SOFTMAX_TAU sets how peaked the softmax is — small τ
+        # picks the single bin with biggest spread, large τ averages.
+        score_z = spread_bin / CALF_SOFTMAX_TAU
+        weights_z = torch.softmax(score_z, dim=0)
+        calf_z = (weights_z * z_grid).sum()
+
+        # Resolve the slice origin in the raw (native) frame: we have the
+        # axis there and the knee bone position there, but the soft-
+        # resolved Z is in verts_zup.  Convert: knee_pt[height_axis] in raw
+        # corresponds to knee_z_t in verts_zup; from soft calf_z we want
+        # the matching raw-frame point on the tibia centre line.  The same
+        # height-axis projection used in :func:`_calf_axis_origin_and_z_range`
+        # is invertible: bone_z / mesh_height is the fractional height, and
+        # we can solve ``knee_pt + s * tibia_dir`` so that its projected
+        # fractional height matches the desired one.  Practically,
+        # parameterise the tibia in the raw frame and solve for the same
+        # fractional-height target as the soft Z.
+        with torch.no_grad():
+            heads = model._last_bone_heads
+            tails = model._last_bone_tails
+            all_pts = torch.cat([heads[0], tails[0]], dim=0)
+            extents = all_pts.max(0).values - all_pts.min(0).values
+            height_axis = int(extents.argmax().item())
+            raw_min = all_pts[:, height_axis].min()
+            raw_range = all_pts[:, height_axis].max() - raw_min
+        mesh_height = verts_zup[0, :, 2].max()
+
+        # Target fractional height in [0, 1] from the soft Z
+        frac_target = calf_z / (mesh_height + 1e-10)
+        # Knee fractional height in raw frame
+        frac_knee = (knee_pt[height_axis] - raw_min) / (raw_range + 1e-10)
+        # Tibia direction along height_axis in raw frame
+        labels = list(model.bone_labels)
+        ll1 = labels.index(f"lowerleg01.{side}")
+        ll2 = labels.index(f"lowerleg02.{side}")
+        tibia_raw = tails[0, ll2] - heads[0, ll1]
+        tibia_dz = tibia_raw[height_axis]
+        # Step along tibia so that the resulting Z fractional matches
+        # frac_target.  Avoid division blow-up if tibia is degenerate.
+        s = (frac_target - frac_knee) * raw_range / (tibia_dz + 1e-10)
+        origin = knee_pt + s * tibia_raw
+
+        edges = _build_leg_edges(model, side).to(verts.device)
+        circ = soft_circumference_plane(verts, edges, origin, axis)
+        circs.append(circ)
+
+    raw_calf_cm = (circs[0] + circs[1]) / 2 * 100
+    return {"calf_cm": CALF_A * raw_calf_cm + CALF_B}
 
 
 def waist_z(model, verts_zup):
