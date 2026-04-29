@@ -56,7 +56,7 @@ m = measure(body)
 
 ### Differentiable path — `measure_grad` (Anny only, experimental)
 
-> **Under active development.** API surface and supported keys may change between minor versions. Twelve keys are differentiable today; more will follow.
+> **Under active development.** API surface and supported keys may change between minor versions. Fifteen keys are differentiable today; more will follow.
 
 For autograd-based optimization of the body mesh, use `measure_grad(body)` instead of `measure(body)`. Same input, same key names — but the returned values are PyTorch tensors with autograd history, so you can put them directly into a loss and backprop into the Anny phenotype parameters.
 
@@ -95,13 +95,15 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 | `upperarm_cm` | ≤ 1 cm |
 | `mass_kg` | ≤ 3 kg |
 | `thigh_cm` | MAE 0.06 cm, max 0.18 cm (100 random bodies) |
+| `knee_cm` | MAE 0.24 cm, P95 0.51 cm, max 0.69 cm (100 bodies). Perpendicular slice along femur–tibia bisector at `upperleg02.tail` (= ISO §3.1.17 kneecap centre on Anny A-pose meshes). |
+| `calf_cm` | MAE 0.08 cm, P95 0.23 cm, max 0.92 cm (100 bodies). Per-leg Gaussian Z-binning + spread-proxy soft-argmax → perpendicular slice along tibia. Anatomical Gaussian prior (β=2000) at `knee_z − 0.30·(knee_z − ankle_z)` mirrors numpy's deflated-calf boundary fallback. |
 | `neck_cm` | MAE 0.20 cm, P95 0.45 cm, max 1.01 cm (999 bodies). Tilted plane perpendicular to neck axis, anchor `0.0102 × body_height` below neck02 bone head (ISO §5.3.2 "just below the Adam's apple"). |
 
 #### Circumference = convex hull perimeter, not contour perimeter
 
 Both `measure()` and `measure_grad` report **convex hull circumference**, not the raw cross-section perimeter. This matches ISO 8559-1: a real measuring tape bridges across concavities (e.g., cleavage between breasts, armpit crease) rather than dipping into them. The convex hull perimeter is always ≤ the raw contour perimeter — the difference is most visible at the bust on larger cup sizes where the cleavage concavity can shorten the measurement by 1-3 cm compared to following the actual surface.
 
-`measure_grad` builds a 72-point polygon via differentiable soft edge-plane intersection, then takes its `scipy.spatial.ConvexHull` perimeter. This is used for bust, underbust, hip, stomach, thigh, and neck — each at its respective anatomical level. For bust/hip/stomach/thigh the cutting plane is horizontal (`soft_circumference`); for the neck it tilts to perpendicular-to-the-neck-axis (`soft_circumference_plane`) because a horizontal slice overestimates the neck by 5-6 % (the neck leans ~15-20° forward). Every `measure_grad()` call recomputes the hull from scratch (new forward pass → new polygon → new hull). The hull decides *which* polygon vertices to keep (discrete, like `argmax` or `tensor[mask]`) — but the perimeter of those vertices is a plain sum of `torch.linalg.norm` over their positions, so `loss.backward()` flows gradients through the kept vertices back to the Anny phenotype params. Dropped vertices (inside the hull, e.g., cleavage or gluteal cleft bins) get zero gradient — correct, since they don't affect the tape measure. The hull indices can change between optimization steps if the body shape changes enough, but the perimeter value is continuous at those transitions so the loss doesn't jump. See `clad_body/measure/_soft_circ.py`.
+`measure_grad` builds a 72-point polygon via differentiable soft edge-plane intersection, then takes its `scipy.spatial.ConvexHull` perimeter. This is used for bust, underbust, hip, stomach, thigh, knee, calf, and neck — each at its respective anatomical level. For bust/hip/stomach/thigh the cutting plane is horizontal (`soft_circumference`); for knee, calf, and neck it tilts (`soft_circumference_plane`) because the limb axis is meaningfully off-vertical and horizontal slicing biases the result. Knee slices perpendicular to the femur–tibia bisector at the bone-anchored kneecap centre. Calf slices perpendicular to the tibia at a soft-argmax-resolved gastrocnemius Z (with a Gaussian prior centred at the anatomical 30 %-from-knee fallback). Neck tilts to perpendicular-to-the-neck-axis (the neck leans ~15-20° forward; horizontal slice would overestimate by 5-6 %). Every `measure_grad()` call recomputes the hull from scratch (new forward pass → new polygon → new hull). The hull decides *which* polygon vertices to keep (discrete, like `argmax` or `tensor[mask]`) — but the perimeter of those vertices is a plain sum of `torch.linalg.norm` over their positions, so `loss.backward()` flows gradients through the kept vertices back to the Anny phenotype params. Dropped vertices (inside the hull, e.g., cleavage or gluteal cleft bins) get zero gradient — correct, since they don't affect the tape measure. The hull indices can change between optimization steps if the body shape changes enough, but the perimeter value is continuous at those transitions so the loss doesn't jump. See `clad_body/measure/_soft_circ.py`.
 
 For `stomach_cm` the cutting-plane height is itself differentiable: a soft-argmin over torso vertex Y (most anterior = most negative) in the belly Z-range picks the height of maximum anterior protrusion, and one `soft_circumference` is taken there. See `measure_stomach_soft` in the same file. The Z selection can drift by 1–2 cm from the reference's 2 mm band-scan argmax on bodies where multiple vertex clusters have near-identical anterior Y — which translates to ~3 cm of circumference error because the body tapers rapidly in the belly region. This is why `stomach_cm` has looser tolerance than the other soft-circ keys.
 
@@ -216,7 +218,7 @@ Tier codes: **core**, **std** (standard), **enh** (enhanced), **fit** (fitted). 
 | **G** Body composition | volume, mass, bmi, body_fat | Cheap | D |
 | **H** Back length | back_neck_to_waist | Cheap | A |
 
-Group C and E have differentiable alternatives in [`measure_grad`](#differentiable-path--measure_grad-anny-only-experimental) — use it for hot-loop optimization instead of calling `measure()` repeatedly.
+Groups B (thigh, knee, calf, upperarm), C (shoulder_width, sleeve_length), D (neck), and E (inseam) have differentiable alternatives in [`measure_grad`](#differentiable-path--measure_grad-anny-only-experimental) — use it for hot-loop optimization instead of calling `measure()` repeatedly.
 
 ## Performance
 
