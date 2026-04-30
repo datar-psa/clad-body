@@ -15,7 +15,6 @@ Usage:
 
 import argparse
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -123,14 +122,36 @@ RIGHT_LEG_BONES = set(range(22, 41))  # upperleg01.R (22) through toe5-3.R (40)
 # Navy formula (Hodgdon & Beckett, 1984) for normal range,
 # Weltman equations (1987/1988) for obese bodies.
 # See findings/feature_impact_and_density.md for full research.
+#
+# The implementation is torch-native so the same formula can be used in both
+# the float `measure()` path and the differentiable `measure_grad()` path.
+# The Navy↔Weltman switch is a sigmoid soft-blend (transition width 2 BF
+# units) instead of a hard branch, so the formula is gradient-friendly even
+# in the obese regime.
+
+# Siri two-component model (cadaver-derived, tissue-only).
+_SIRI_D_FAT = 900.0   # kg/m³
+_SIRI_D_FFM = 1100.0  # kg/m³
+
+# Soft-blend parameters for Navy↔Weltman switch.
+_NAVY_WELTMAN_THRESHOLD = {"male": 28.0, "female": 38.0}
+_NAVY_WELTMAN_BLEND_WIDTH = 2.0  # BF % per sigmoid e-fold
+
+
+def _to_tensor(x, ref):
+    """Wrap a Python float as a tensor on the same device/dtype as ``ref``."""
+    if isinstance(x, torch.Tensor):
+        return x
+    return torch.as_tensor(x, dtype=ref.dtype, device=ref.device)
+
 
 def estimate_body_fat_pct(height_cm, waist_cm, hip_cm, neck_cm,
                           mass_kg, gender):
     """Estimate body fat % from circumference measurements.
 
     Uses the Hodgdon & Beckett (1984) density equations (cm inputs) with the
-    Siri transform to get BF%. Switches to Weltman equations (1987/1988) for
-    obese bodies where the Navy formula underestimates fat.
+    Siri transform to get BF%. Soft-blends Navy ↔ Weltman around 28 % (male)
+    or 38 % (female) so the formula is differentiable in the obese regime.
 
     IMPORTANT: The Hodgdon density formulas use cm. The commonly-cited direct
     BF% formulas (86.010 × log10(waist-neck)...) use INCHES — using those
@@ -141,48 +162,67 @@ def estimate_body_fat_pct(height_cm, waist_cm, hip_cm, neck_cm,
     Navy formula validated against DXA: SEE ±3.5% in normal range.
     Weltman validated against hydrostatic weighing: SEE ±2.9% in obese range.
 
+    Inputs may be Python floats or torch tensors (mixing is supported — floats
+    are wrapped on the device/dtype of the first tensor input). The return
+    type matches: float in → float out, tensor in → tensor out (gradients
+    preserved).
+
     Args:
         height_cm: body height
         waist_cm: waist circumference (Anny vertex loop or narrowest point)
         hip_cm: hip circumference
         neck_cm: neck circumference (minimum in neck region)
-        mass_kg: body mass (Anny volume × 980)
+        mass_kg: body mass — used by the Weltman branch as a bootstrap
         gender: "male" or "female"
 
     Returns:
-        Estimated body fat percentage (clipped to 3-60% range).
+        Estimated body fat percentage (clamped to 3-60 % range).
     """
+    inputs = {"height_cm": height_cm, "waist_cm": waist_cm,
+              "hip_cm": hip_cm, "neck_cm": neck_cm, "mass_kg": mass_kg}
+    tensor_inputs = [v for v in inputs.values() if isinstance(v, torch.Tensor)]
+    return_float = not tensor_inputs
+
+    # Pick a reference tensor for device/dtype, or build one from a float.
+    if tensor_inputs:
+        ref = tensor_inputs[0]
+    else:
+        ref = torch.tensor(0.0, dtype=torch.float64)
+    inputs = {k: _to_tensor(v, ref) for k, v in inputs.items()}
+    height_cm = inputs["height_cm"]
+    waist_cm = inputs["waist_cm"]
+    hip_cm = inputs["hip_cm"]
+    neck_cm = inputs["neck_cm"]
+    mass_kg = inputs["mass_kg"]
+
     if gender == "male":
         diff = waist_cm - neck_cm
-        if diff <= 0:
-            return 3.0
-        # Hodgdon & Beckett density formula (cm inputs)
+        # log10(diff) is undefined at diff <= 0; clamp protects against
+        # degenerate geometries while keeping a finite gradient.
+        diff_safe = torch.clamp_min(diff, 0.1)
         density = (1.0324
-                   - 0.19077 * math.log10(diff)
-                   + 0.15456 * math.log10(height_cm))
+                   - 0.19077 * torch.log10(diff_safe)
+                   + 0.15456 * torch.log10(height_cm))
         navy_bf = 495.0 / density - 450.0
-        # Switch to Weltman for obese males (Navy underestimates above ~28% BF)
-        if navy_bf > 28:
-            bf = 0.31457 * waist_cm - 0.10969 * mass_kg + 10.8336
-        else:
-            bf = navy_bf
+        weltman_bf = 0.31457 * waist_cm - 0.10969 * mass_kg + 10.8336
+        threshold = _NAVY_WELTMAN_THRESHOLD["male"]
     else:
         diff = waist_cm + hip_cm - neck_cm
-        if diff <= 0:
-            return 3.0
-        # Hodgdon & Beckett density formula (cm inputs)
+        diff_safe = torch.clamp_min(diff, 0.1)
         density = (1.29579
-                   - 0.35004 * math.log10(diff)
-                   + 0.22100 * math.log10(height_cm))
+                   - 0.35004 * torch.log10(diff_safe)
+                   + 0.22100 * torch.log10(height_cm))
         navy_bf = 495.0 / density - 450.0
-        # Switch to Weltman for obese females (Navy underestimates above ~38% BF)
-        if navy_bf > 38:
-            bf = (0.11077 * waist_cm - 0.17666 * height_cm
-                  + 0.14354 * mass_kg + 51.03301)
-        else:
-            bf = navy_bf
+        weltman_bf = (0.11077 * waist_cm - 0.17666 * height_cm
+                      + 0.14354 * mass_kg + 51.03301)
+        threshold = _NAVY_WELTMAN_THRESHOLD["female"]
 
-    return max(3.0, min(60.0, bf))
+    # Soft Navy↔Weltman blend.  Below threshold → ~Navy; above → ~Weltman.
+    blend = torch.sigmoid((navy_bf - threshold) / _NAVY_WELTMAN_BLEND_WIDTH)
+    bf = (1.0 - blend) * navy_bf + blend * weltman_bf
+    bf = torch.clamp(bf, 3.0, 60.0)
+
+    return float(bf.item()) if return_float else bf
 
 
 def body_density_from_bf(bf_pct):
@@ -191,7 +231,7 @@ def body_density_from_bf(bf_pct):
     Uses the Siri two-component model (1961):
         density = 1 / (BF/d_fat + (1-BF)/d_ffm)
 
-    Returns density in kg/m³ (e.g. 1039 for 15% BF).
+    Accepts Python floats or torch tensors; returns the same kind.
 
     Note on conventions: this is *tissue-only* density (the value hydrostatic
     weighing reports after subtracting residual lung volume), not whole-body
@@ -203,11 +243,26 @@ def body_density_from_bf(bf_pct):
     questionnaire/findings/feature_impact_and_density.md for the rationale
     and the open question about which volume convention Anny's mesh follows.
     """
-    bf = bf_pct / 100.0
-    bf = max(0.03, min(0.60, bf))
-    d_fat = 900.0    # kg/m³ — Siri (tissue-only, from cadaver studies)
-    d_ffm = 1100.0   # kg/m³ — Siri (tissue-only, from cadaver studies)
-    return 1.0 / (bf / d_fat + (1.0 - bf) / d_ffm)
+    if isinstance(bf_pct, torch.Tensor):
+        bf = torch.clamp(bf_pct / 100.0, 0.03, 0.60)
+        return 1.0 / (bf / _SIRI_D_FAT + (1.0 - bf) / _SIRI_D_FFM)
+    bf = max(0.03, min(0.60, bf_pct / 100.0))
+    return 1.0 / (bf / _SIRI_D_FAT + (1.0 - bf) / _SIRI_D_FFM)
+
+
+def bf_corrected_density(height_cm, waist_cm, hip_cm, neck_cm,
+                         mass_kg, gender):
+    """Convenience: BF-corrected tissue density (kg/m³).
+
+    Equivalent to ``body_density_from_bf(estimate_body_fat_pct(...))``.
+    Used in both ``measure()`` and ``measure_grad()`` so the two paths
+    compute the same ``mass_kg = volume × density`` value.
+
+    Returns Python float for float inputs, torch tensor for tensor inputs.
+    """
+    bf = estimate_body_fat_pct(height_cm, waist_cm, hip_cm, neck_cm,
+                               mass_kg, gender)
+    return body_density_from_bf(bf)
 
 
 # Median tissue-only density per gender from our sampling distribution
@@ -1200,7 +1255,7 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
         measurements["volume_m3"] = anthro.volume(verts).item()
         anny_mass = anthro.mass(verts).item()
         measurements["_anny_mass_kg"] = anny_mass  # V×980 (internal)
-        measurements["mass_kg"] = anny_mass  # default; overridden by V×ρ below
+        measurements["mass_kg"] = anny_mass  # default; overridden by V×ρ̂ below
         measurements["bmi"] = anthro.bmi(verts).item()
 
         neck = measurements.get("neck_cm", 0)
@@ -1219,7 +1274,8 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
             measurements["estimated_density"] = dens
             measurements["density_corrected_mass_kg"] = density_corrected_mass(
                 anny_mass, dens, gender_str)
-            measurements["mass_kg"] = measurements["volume_m3"] * dens  # V×ρ
+            # Single-source BF-corrected mass — same formula measure_grad uses.
+            measurements["mass_kg"] = measurements["volume_m3"] * dens
 
     # ── Visualization ────────────────────────────────────────────────────
     # Polylines + contours when we have enough data
@@ -1335,17 +1391,15 @@ def measure_grad(body, *, pose=None, only=None):
         findings/shoulder_width_diff.md.
 
     Note on mass_kg:
-        Computed as ``volume(verts) × _MEDIAN_DENSITY[gender]`` where
-        ``_MEDIAN_DENSITY = {"male": 1059, "female": 1031}`` (kg/m³,
-        population-median tissue density from hydrostatic weighing).
-        This is intentionally simpler than the value returned by
-        :func:`measure`, which uses a body-fat-corrected density derived
-        from neck/waist/hip/height (non-differentiable).  The trade-off:
-        ``measure_grad`` mass cannot reflect body composition variance
-        within a gender, but it stays differentiable end-to-end and
-        tracks real human mass at the population median (within ~2 kg
-        for normal-composition adults).  ``measure`` remains the more
-        accurate static reporting value.
+        Computed as ``volume(verts) × ρ̂(BF)`` where ``ρ̂`` is the Siri
+        tissue density derived from a body-fat estimate (Hodgdon & Beckett
+        Navy formula, soft-blended into Weltman past 28 % male / 38 %
+        female).  This matches :func:`measure`'s ``mass_kg`` exactly — same
+        helper (:func:`bf_corrected_density`) called from both paths.
+
+        Requesting ``mass_kg`` auto-includes its dependencies (``height_cm``,
+        ``waist_cm``, ``hip_cm``, ``neck_cm``) for the BF formula but does
+        not return them unless the caller also asked for them explicitly.
 
     Note:
         MHR is not yet supported.  API and supported keys may change between
@@ -1401,6 +1455,15 @@ def _measure_grad_from_verts(model, verts, *, requested):
     already populated by the caller (typically :func:`measure_grad` itself),
     and that ``requested`` is a validated frozenset of keys.
     """
+    # mass_kg uses the BF-corrected formula — same as measure() — which needs
+    # height/waist/hip/neck. Auto-include them so the user doesn't have to,
+    # then strip the ones they didn't ask for before returning.
+    user_requested = frozenset(requested)
+    if "mass_kg" in user_requested:
+        requested = frozenset(
+            set(user_requested) | {"height_cm", "waist_cm", "hip_cm", "neck_cm"}
+        )
+
     result = {}
 
     # Vertex loop indices (cached on model after first call — topology-only)
@@ -1494,16 +1557,27 @@ def _measure_grad_from_verts(model, verts, *, requested):
         result["neck_cm"] = nk["neck_cm"]
 
     # ── mass_kg ───────────────────────────────────────────────────────────────
-    # Plain V × ρ_median(gender) — fully differentiable. Differs from measure()
-    # which uses BF-corrected density (depends on neck/waist/hip → non-diff).
-    # See docstring "Note on mass_kg" for the rationale.
+    # V × BF-corrected tissue density.  Same formula as measure() — Navy
+    # density (Hodgdon & Beckett) blended into Weltman in the obese regime
+    # via a sigmoid (no hard branch, gradients flow through every input).
+    # The Weltman bootstrap mass uses Anny's V×980 default — same as the
+    # float ``measure()`` callsite.
     if "mass_kg" in requested:
         gender_str = _infer_gender(model, verts)
-        density = _MEDIAN_DENSITY.get(gender_str, 1045.0)
+        anny_mass = anthro.mass(verts).squeeze(0)  # V × 980 (bootstrap)
+        density = bf_corrected_density(
+            height_cm=result["height_cm"],
+            waist_cm=result["waist_cm"],
+            hip_cm=result["hip_cm"],
+            neck_cm=result["neck_cm"],
+            mass_kg=anny_mass,
+            gender=gender_str,
+        )
         volume_m3 = anthro.volume(verts).squeeze(0)
         result["mass_kg"] = volume_m3 * density
 
-    return result
+    # Strip auto-included mass_kg dependencies that the user didn't request.
+    return {k: v for k, v in result.items() if k in user_requested}
 
 
 def main():

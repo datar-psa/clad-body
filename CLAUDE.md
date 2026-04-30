@@ -17,7 +17,9 @@ ISO 8559-1 body measurements for Anny and MHR.
        m = measure(body, only=["bust_cm"])
    ```
 
-2. **The Anny model is stateless.** Phenotype values are forward-pass kwargs, not model state — `model(phenotype_kwargs=A)` then `model(phenotype_kwargs=B)` on the same model is safe. What varies between model instances is which `local_changes` labels are enabled (blendshape basis dimensions).
+   **⚠ Caveat (2026-04-30):** state leaks across bodies even with identical LC label sets. Empirically validated on 1000 bodies from `data_10k_42`: sharing the model produced ~3 kg systematic bias on `mass_kg` vs an unshared run, and per-body errors up to ~13 kg on the `measure_grad` path. Suspect cached forward-pass tensors / bone heads / soft-circ edge caches stored on the model object. Until the leak is rooted out, **only use this pattern when measurements are dominated by a single forward pass and you can prove independence in your specific call set** — verify by running a small unshared sample side-by-side. Don't blanket-apply to validation, training data generation, or anything where per-body accuracy matters.
+
+2. **The Anny model is stateless.** Phenotype values are forward-pass kwargs, not model state — `model(phenotype_kwargs=A)` then `model(phenotype_kwargs=B)` on the same model is safe. What varies between model instances is which `local_changes` labels are enabled (blendshape basis dimensions). (Note: this is the *Anny model* itself. The `clad-body` measurement pipeline stores caches on the model object — see caveat in trap 1.)
 
 3. **For optimisation hot loops** where you already have a model and a fresh forward-pass vertex tensor, use `load_anny_from_verts(verts, model, phenotype_kwargs=..., bone_heads=..., bone_tails=...)` to wrap them into an `AnnyBody` without re-creating the model.
 

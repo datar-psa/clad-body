@@ -22,7 +22,6 @@ from clad_body.load.anny import AnnyBody, load_anny_from_params
 from clad_body.measure import measure
 from clad_body.measure.anny import (
     SUPPORTED_KEYS,
-    _MEDIAN_DENSITY,
     load_phenotype_params,
     measure_grad,
 )
@@ -114,13 +113,12 @@ TOLERANCE_SHOULDER_WIDTH_CM = 2.0
 # whereas the non-diff argmax picks a single mesh-topology-specific spike.
 TOLERANCE_STOMACH_CM = 4.0
 
-# mass_kg in measure_grad uses V × _MEDIAN_DENSITY[gender] (no BF correction).
-# measure() uses V × BF-corrected density (Navy/Weltman → Siri equation).  The
-# two diverge most for plus-size bodies (high BF lowers density below the
-# population median).  Empirically observed max on testdata: 2.98 kg
-# (female_plus_size).  The strict V × _MEDIAN_DENSITY[gender] identity is
-# checked separately in test_mass_kg_matches_volume_times_median_density.
-TOLERANCE_MASS_KG = 3.1
+# mass_kg in measure_grad uses V × ρ̂(BF) — the same BF-corrected formula
+# as measure() (single source: bf_corrected_density()).  Residual diff
+# comes from soft-circ vs plane-sweep waist/hip/neck (the BF formula's
+# inputs), not from the density helper itself.  Empirically <0.5 kg on
+# testdata bodies; pinned at 1.0 kg with headroom.
+TOLERANCE_MASS_KG = 1.0
 
 # neck_cm in measure_grad slices perpendicular to the neck axis at a height-
 # proportional offset below neck02 bone head (the Adam's apple anchor), per
@@ -427,27 +425,29 @@ def test_inseam_tracks_mesh_sweep_under_leg_length_blendshape(delta):
 
 
 # ---------------------------------------------------------------------------
-# 1b. mass_kg identity — must match V × _MEDIAN_DENSITY[gender] exactly
+# 1b. mass_kg identity — must match measure()'s BF-corrected value exactly
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", ALL_SUBJECTS)
-def test_mass_kg_matches_volume_times_median_density(name):
-    """measure_grad['mass_kg'] == measure()['volume_m3'] * _MEDIAN_DENSITY[gender].
+def test_mass_kg_matches_measure_bf_corrected(name):
+    """measure_grad['mass_kg'] ≈ measure()['mass_kg'].
 
-    The cross-API equivalence test (test_forward_equivalence) compares against
-    measure()'s BF-corrected mass with a generous tolerance.  This test pins
-    the actual measure_grad formula: simple V × constant per gender.
+    Both paths share ``bf_corrected_density()`` (single source).  Residual
+    divergence comes entirely from waist/hip/neck cm differences — soft-circ
+    in measure_grad vs plane-sweep in measure — flowing through log10 in the
+    Hodgdon density formula.  Empirically <0.2 kg on the testdata bodies.
     """
     body = _load(name)
-    m_ref = measure(body, only=["volume_m3"])
+    # measure() returns BF-corrected mass_kg via bf_corrected_density().
+    m_ref = measure(body)
     m_grad = measure_grad(body, only=["mass_kg"])
 
-    gender_str = "female" if "female" in name else "male"
-    expected = m_ref["volume_m3"] * _MEDIAN_DENSITY[gender_str]
+    expected = m_ref["mass_kg"]
     got = m_grad["mass_kg"].item()
 
-    assert abs(got - expected) < 0.01, (
-        f"{name}: mass_kg={got:.4f}, expected V×ρ={expected:.4f}"
+    assert abs(got - expected) < 0.5, (
+        f"{name}: measure_grad mass_kg={got:.4f}, "
+        f"measure mass_kg={expected:.4f}, diff={abs(got-expected):.4f}"
     )
 
 
