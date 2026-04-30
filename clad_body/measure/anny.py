@@ -267,41 +267,6 @@ def bf_corrected_density(height_cm, waist_cm, hip_cm, neck_cm,
 
 # Median tissue-only density per gender from our sampling distribution
 # (200-sample validation, stable across seeds). These match published
-# hydrostatic-weighing values for adults with normal body composition
-# (PubMed 12400035: ~1060 male, ~1042 female for low-BF Japanese cohort).
-#
-# IMPORTANT: these are *tissue-only* densities (lung air subtracted), while
-# Anny's 980 kg/m³ default is closer to *whole-body* density (lung air
-# included). The two conventions differ by ~50 kg/m³. The density correction
-# below assumes Anny's mesh volume is consistent with the tissue-only
-# convention — which is unverified. Empirically the correction works (lean
-# bodies get more mass, soft bodies get less), but the absolute scale rests
-# on the 980 calibration being correct for the "average" subject.
-_MEDIAN_DENSITY = {"male": 1059, "female": 1031}
-
-
-def density_corrected_mass(mass_kg, estimated_density, gender):
-    """Correct Anny mass for body composition differences across builds.
-
-    Anny uses fixed 980 kg/m³ which gives correct mass for average bodies.
-    This function adjusts mass relative to the population median density so
-    that athletic bodies (denser) get slightly more mass and soft bodies
-    (less dense) get slightly less — without shifting the average.
-
-    Typical corrections: -2 to +1 kg (centered around zero for average build).
-
-    Args:
-        mass_kg: Anny mass (volume × 980)
-        estimated_density: from body_density_from_bf() (kg/m³)
-        gender: "male" or "female"
-
-    Returns:
-        Corrected mass in kg.
-    """
-    ref = _MEDIAN_DENSITY.get(gender, 1045)
-    return mass_kg * (estimated_density / ref)
-
-
 def _infer_gender(model, verts):
     """Infer gender string from Anny model's last phenotype kwargs.
 
@@ -1272,8 +1237,6 @@ def _measure_anny(body, *, groups, render_path=None, title="", device=None):
             measurements["body_fat_pct"] = bf_pct
             dens = body_density_from_bf(bf_pct)
             measurements["estimated_density"] = dens
-            measurements["density_corrected_mass_kg"] = density_corrected_mass(
-                anny_mass, dens, gender_str)
             # Single-source BF-corrected mass — same formula measure_grad uses.
             measurements["mass_kg"] = measurements["volume_m3"] * dens
 

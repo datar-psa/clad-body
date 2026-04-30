@@ -35,7 +35,7 @@ GROUP_C = "joint_linear"     # shoulder_width, sleeve_length
 GROUP_D = "perpendicular"    # neck
 GROUP_E = "mesh_geometry"    # inseam, crotch_length, front_rise, back_rise
 GROUP_F = "surface_trace"    # shirt_length
-GROUP_G = "body_composition" # volume, mass, bmi, body_fat, estimated_density, density_corrected_mass
+GROUP_G = "body_composition" # volume, mass, bmi, body_fat, estimated_density
 GROUP_H = "back_length"      # back_neck_to_waist (needs joints + waist_z from A)
 
 _KEY_TO_GROUP = {
@@ -65,7 +65,6 @@ _KEY_TO_GROUP = {
     "bmi": GROUP_G,
     "body_fat_pct": GROUP_G,
     "estimated_density": GROUP_G,
-    "density_corrected_mass_kg": GROUP_G,
 }
 
 # Group dependencies:

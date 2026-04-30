@@ -93,7 +93,7 @@ Supported keys and their calibration error vs the ISO reference that `measure()`
 | `sleeve_length_cm` | RMS 0.33 cm, max 0.55 cm |
 | `shoulder_width_cm` | RMS 1.39 cm on 100 random bodies (91 % within ±2 cm). Max 5cm |
 | `upperarm_cm` | ≤ 1 cm |
-| `mass_kg` | ≤ 3 kg |
+| `mass_kg` | MAE 0.034 kg, P95 0.10 kg, max 0.22 kg (1000 bodies). `volume × ρ̂(BF)` with the same BF-corrected formula `measure()` uses (Hodgdon density, Navy/Weltman soft-blended). Residual comes from soft-circ vs plane-sweep waist/hip/neck flowing through `log10` in the density formula. |
 | `thigh_cm` | MAE 0.06 cm, max 0.18 cm (100 random bodies) |
 | `knee_cm` | MAE 0.24 cm, P95 0.51 cm, max 0.69 cm (100 bodies). Perpendicular slice along femur–tibia bisector at `upperleg02.tail` (= ISO §3.1.17 kneecap centre on Anny A-pose meshes). |
 | `calf_cm` | MAE 0.08 cm, P95 0.23 cm, max 0.92 cm (100 bodies). Per-leg Gaussian Z-binning + spread-proxy soft-argmax → perpendicular slice along tibia. Anatomical Gaussian prior (β=2000) at `knee_z − 0.30·(knee_z − ankle_z)` mirrors numpy's deflated-calf boundary fallback. |

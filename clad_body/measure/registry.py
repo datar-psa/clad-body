@@ -364,19 +364,6 @@ _reg(MeasurementDef(
 ))
 
 _reg(MeasurementDef(
-    key="density_corrected_mass_kg",
-    name="Density-corrected mass",
-    description=(
-        "Body mass adjusted for body composition relative to population median "
-        "density. Corrects Anny's fixed 980 kg/m³ for build variation."
-    ),
-    iso_ref=None,
-    type=SCALAR, standard=DERIVED, region=FULL_BODY, tier=ENHANCED,
-    garments=frozenset(), unit="kg",
-    needs_joints=True, anny_only=True,
-))
-
-_reg(MeasurementDef(
     key="back_neck_to_waist_cm",
     name="Back neck point to waist length",
     description=(
