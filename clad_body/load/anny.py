@@ -222,6 +222,7 @@ def load_anny_from_verts(
     model,
     *,
     phenotype_kwargs: Optional[dict] = None,
+    local_changes_kwargs: Optional[dict] = None,
     bone_heads=None,
     bone_tails=None,
     source: str = "from_verts",
@@ -246,6 +247,12 @@ def load_anny_from_verts(
             given, they're stashed on the model so ``measure()``'s gender
             inference can read them.  May be omitted (gender will fall
             back to a mesh heuristic).
+        local_changes_kwargs: optional local-change kwargs from the same
+            forward pass.  Required if the body uses any local-change
+            blendshapes AND you intend to call slow ISO references that
+            re-pose the body (e.g. ``sleeve_length_cm``); without them the
+            re-pose runs without the blendshapes and returns the baseline
+            arm length regardless of the supplied vertices.
         bone_heads, bone_tails: outputs of ``model(..., return_bone_ends=True)``.
             If provided, stashed on the model so joint extraction works
             inside ``measure()``.
@@ -272,6 +279,8 @@ def load_anny_from_verts(
 
     if phenotype_kwargs is not None:
         model._last_phenotype_kwargs = phenotype_kwargs
+    if local_changes_kwargs is not None:
+        model._last_local_changes_kwargs = local_changes_kwargs
     if bone_heads is not None:
         model._last_bone_heads = bone_heads
     if bone_tails is not None:
@@ -282,6 +291,8 @@ def load_anny_from_verts(
         faces=faces_np,
         source=source,
         phenotype_params={},  # non-None placeholder; measure() requires this
+        phenotype_kwargs=phenotype_kwargs,
+        local_changes_kwargs=local_changes_kwargs,
         _model=model,
         _xy_offset=(-center_xy).astype(np.float32),
     )
@@ -388,10 +399,12 @@ def load_anny_from_params(
 
     # Stash bone data + phenotype kwargs on model for joint extraction and
     # gender inference in measure(). _infer_gender reads _last_phenotype_kwargs
-    # to pick male/female body fat formulas.
+    # to pick male/female body fat formulas. _last_local_changes_kwargs is
+    # used by slow ISO references that re-pose the body (sleeve length).
     model._last_bone_heads = output.get("bone_heads")
     model._last_bone_tails = output.get("bone_tails")
     model._last_phenotype_kwargs = phenotype_kwargs
+    model._last_local_changes_kwargs = local_kwargs
 
     verts_np = output["vertices"][0].cpu().numpy().astype(np.float32)
     faces_np = model.faces.cpu().numpy().astype(np.int32)

@@ -335,3 +335,120 @@ class TestCalfAnatomicalPlacement:
             f"(calf_z={m['_calf_z']:.3f}, knee_z={m['_knee_z']:.3f}, "
             f"calf_cm={m['calf_cm']:.2f}, knee_cm={m['knee_cm']:.2f})"
         )
+
+
+class TestInseamNoHandSaturation:
+    """ISO 8559-1 §5.1.15 inseam — slow plane-sweep reference must reject
+    A-pose hand cross-sections that hang in the crotch z-range.
+
+    Regression: the inseam loop's leg-contour filter (`x_extent < 0.30 m`)
+    accepted any narrow contour. For heavy/curvy bodies whose true crotch z
+    overlaps the z-range where hands hang in A-pose, the small hand contours
+    at ±60 cm in X were misclassified as legs, keeping ``has_two=True`` past
+    the actual leg-merge point. The loop then exited at the search-range
+    upper bound, returning an inseam of exactly 0.55 × height.
+    """
+
+    @pytest.fixture(scope="class")
+    def saturating_body(self):
+        from clad_body.load.anny import load_anny_from_params
+        fixture_path = os.path.join(
+            os.path.dirname(__file__), "testdata", "inseam_saturating_body.json"
+        )
+        with open(fixture_path) as f:
+            fixture = json.load(f)
+        return load_anny_from_params(fixture["params"])
+
+    def test_inseam_ratio_in_anatomical_range(self, saturating_body):
+        """Inseam / height must be in the human anatomical range, not the
+        search-range upper bound."""
+        from clad_body.measure import measure
+        m = measure(saturating_body, only=["inseam_cm"])
+        h_cm = (
+            saturating_body.vertices[:, 2].max()
+            - saturating_body.vertices[:, 2].min()
+        ) * 100
+        inseam_cm = m["inseam_cm"]
+        ratio = inseam_cm / h_cm
+        # Anatomical inseam / height is 0.42-0.50 for adults across body types.
+        # Pre-fix bug: ratio = 0.549 (= 0.55 search-range upper bound minus one
+        # step). The 0.52 upper bound below leaves headroom for slightly
+        # high-crotched anatomy while still failing on the saturated bug.
+        assert 0.40 < ratio < 0.52, (
+            f"Inseam ratio {ratio:.4f} (cm={inseam_cm:.2f}, h={h_cm:.1f}) is "
+            f"outside anatomical range — slow ISO inseam likely saturated at "
+            f"the 0.55 × height search-range upper bound. The leg-contour "
+            f"filter in measure_inseam() should be rejecting hand cross-"
+            f"sections that hang in the crotch z-range in A-pose."
+        )
+
+
+class TestSleeveISOReferenceLocalChanges:
+    """ISO 8559-1 §5.4.14 slow sleeve reference must follow arm-length
+    blendshapes regardless of how the body was loaded.
+
+    Regression: ``measure_sleeve_length_iso_reference`` re-poses the body to
+    rest pose via a fresh forward pass. It used to source ``local_changes``
+    only from ``body.phenotype_params['_local_changes']`` — a path
+    populated by ``load_anny_from_params`` but not by
+    ``load_anny_from_verts``. Bodies loaded via the verts path silently
+    re-posed without local changes and returned a constant baseline-arm
+    sleeve regardless of the actual blendshape values.
+    """
+
+    @staticmethod
+    def _build_via_verts(lc_value):
+        import anny
+        import torch
+
+        from clad_body.load.anny import build_anny_apose, load_anny_from_verts
+
+        device = torch.device("cpu")
+        labels = ["measure-upperarm-length-incr"]
+        model = anny.create_fullbody_model(
+            all_phenotypes=True, triangulate_faces=True, local_changes=labels,
+        ).to(dtype=torch.float32, device=device)
+        pheno = {"height": 1.0, "weight": 0.5, "age": 0.4, "muscle": 0.5, "gender": 1.0}
+        ph_kw = {
+            l: torch.tensor([v], dtype=torch.float32)
+            for l, v in pheno.items()
+            if l in model.phenotype_labels
+        }
+        lc_kw = {
+            "measure-upperarm-length-incr": torch.tensor([lc_value], dtype=torch.float32),
+        }
+        a_pose = build_anny_apose(model, device)
+        with torch.no_grad():
+            out = model(
+                pose_parameters=a_pose,
+                phenotype_kwargs=ph_kw,
+                local_changes_kwargs=lc_kw,
+                pose_parameterization="root_relative_world",
+                return_bone_ends=True,
+            )
+        return load_anny_from_verts(
+            out["vertices"], model,
+            phenotype_kwargs=ph_kw,
+            local_changes_kwargs=lc_kw,
+            bone_heads=out["bone_heads"],
+            bone_tails=out["bone_tails"],
+        )
+
+    def test_slow_sleeve_responds_to_upperarm_length_blendshape(self):
+        from clad_body.measure import measure
+
+        baseline_body = self._build_via_verts(0.0)
+        elongated_body = self._build_via_verts(0.4)
+        slow_base = float(measure(baseline_body, only=["sleeve_length_cm"])["sleeve_length_cm"])
+        slow_long = float(measure(elongated_body, only=["sleeve_length_cm"])["sleeve_length_cm"])
+        delta = slow_long - slow_base
+        # The fast bone-chain path sees ~+2.8 cm for upperarm-length=+0.4.
+        # Pre-fix bug: delta == 0 because the re-pose used no local changes.
+        # Use a generous floor (1 cm) to keep the assertion stable.
+        assert delta > 1.0, (
+            f"Slow ISO sleeve does not respond to upperarm-length blendshape "
+            f"when the body was loaded via load_anny_from_verts "
+            f"(base={slow_base:.2f}, +0.4={slow_long:.2f}, Δ={delta:.2f} cm). "
+            f"load_anny_from_verts must propagate local_changes_kwargs so the "
+            f"slow ISO re-pose can apply them."
+        )

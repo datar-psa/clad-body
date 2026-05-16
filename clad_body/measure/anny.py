@@ -540,12 +540,17 @@ def measure_sleeve_length_iso_reference(body, side="L"):
     pose = pose.unsqueeze(0).unsqueeze(0).expand(1, n, 4, 4).clone()
     # No rotation applied — rest pose is natural ~42° elbow flex
 
-    # Re-run forward pass with rest pose (slow path: ~0.5-1s)
-    local_changes = {}
-    if hasattr(body, "phenotype_params") and body.phenotype_params:
-        local_changes = body.phenotype_params.get("_local_changes", {}) or {}
-    local_kwargs = {l: torch.tensor([v], dtype=torch.float32, device=device)
-                    for l, v in local_changes.items()}
+    # Resolve local_changes_kwargs for the re-pose forward — must match the
+    # values used to produce the body, otherwise the re-pose returns baseline-
+    # arm geometry regardless of the body's actual blendshape values.
+    # Search order: body → model cache → phenotype_params dict fallback.
+    local_kwargs = body.local_changes_kwargs
+    if local_kwargs is None:
+        local_kwargs = getattr(model, "_last_local_changes_kwargs", None)
+    if local_kwargs is None:
+        lc_dict = (body.phenotype_params or {}).get("_local_changes") or {}
+        local_kwargs = {l: torch.tensor([v], dtype=torch.float32, device=device)
+                        for l, v in lc_dict.items()}
     with torch.no_grad():
         out = model(
             pose_parameters=pose,

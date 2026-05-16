@@ -707,6 +707,30 @@ def measure_inseam_from_perineum_vertices(verts, height_axis):
     return crotch_z_m * 100
 
 
+# Leg-contour classifier bounds for measure_inseam's plane-sweep loop.
+# A thigh cross-section in the [0.25h, 0.55h] crotch-search range sits near
+# the midline; A-pose hands hang far out at the body's lateral extent
+# (typically |x_center| ≳ 0.45 m). 0.30 m is the cutoff between "leg" and
+# "hand". 0.05 m on x_extent rejects narrow finger fragments that the
+# convex-hull slicer occasionally emits next to the hand cross-section.
+_LEG_X_EXTENT_MIN = 0.05
+_LEG_X_EXTENT_MAX = 0.30
+_LEG_X_CENTER_MAX = 0.30
+
+
+def _is_leg_contour(x_center_m, x_extent_m):
+    """Does this plane-slice contour look like a single thigh cross-section?
+
+    Filters out (a) the merged torso/hip contour above the crotch,
+    (b) A-pose hand/finger cross-sections that hang in the same z-range.
+    """
+    if x_extent_m < _LEG_X_EXTENT_MIN or x_extent_m > _LEG_X_EXTENT_MAX:
+        return False
+    if abs(x_center_m) > _LEG_X_CENTER_MAX:
+        return False
+    return True
+
+
 def measure_inseam(mesh, height, step=0.002):
     """Measure inside leg length (crotch to floor) via mesh geometry.
 
@@ -725,14 +749,12 @@ def measure_inseam(mesh, height, step=0.002):
         z = height * pct
         contours = slicer.limb_contours_at_z(z)
 
-        # Count contours that look like legs (not torso — x_extent < 30cm)
-        leg_contours = []
-        for circ, x_center, x_extent in contours:
-            if x_extent > 0.30:
-                continue
-            leg_contours.append((circ, x_center))
+        leg_contours = [
+            (circ, x_center)
+            for circ, x_center, x_extent in contours
+            if _is_leg_contour(x_center, x_extent)
+        ]
 
-        # Two legs on opposite sides?
         has_two = False
         if len(leg_contours) >= 2:
             has_pos = any(x > 0 for _, x in leg_contours)
